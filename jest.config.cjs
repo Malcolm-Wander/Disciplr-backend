@@ -6,34 +6,22 @@ module.exports = {
     '^(\\.{1,2}/.*)\\.js$': '$1',
   },
   transform: {
-    '^.+\\.ts$': ['ts-jest', { 
-      useESM: true, 
-      tsconfig: {
-        module: 'NodeNext',
-        moduleResolution: 'NodeNext',
-        target: 'ES2022'
-      },
-      diagnostics: { ignoreCodes: [151002] } 
-    }],
-  },
-  testMatch: ['**/tests/**/*.test.ts'],
-  clearMocks: true,
-}
-module.exports = {
-  testEnvironment: 'node',
-  extensionsToTreatAsEsm: ['.ts'],
-  transform: {
     '^.+\\.tsx?$': [
       'ts-jest',
       {
         useESM: true,
+        tsconfig: {
+          module: 'NodeNext',
+          moduleResolution: 'NodeNext',
+          target: 'ES2022'
+        },
+        diagnostics: { ignoreCodes: [151002] } 
       },
     ],
   },
-  moduleNameMapper: {
-    '^(\\.{1,2}/.*)\\.js$': '$1',
-  },
   testMatch: [
-    '**/src/tests/**/*.test.ts',
+    '**/tests/**/*.test.ts',
+    '**/src/tests/**/*.test.ts'
   ],
+  clearMocks: true,
 }
