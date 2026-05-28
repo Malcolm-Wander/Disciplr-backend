@@ -71,7 +71,28 @@ The contract defines the following error types:
 - `AmountMismatch`: Milestone amounts don't sum to total vault amount
 - `Overflow`: Integer overflow occurred during amount summation
 
+### Performance & Gas Benchmarks
+
+To ensure predictable scaling and prevent out-of-gas exploits or transaction failures, the contract has built-in performance bounds.
+
+#### Storage Reads & Complexity Analysis
+- **Milestone Iteration**: Functions like `claim` and `slash_on_miss` iterate over the `milestones` vector to sum release amounts and check status. CPU and Memory usage scale linearly ($O(N)$) with the milestone count $N$.
+- **Flat Storage Access**: The storage layout guarantees flat ($O(1)$) read footprint. There are no redundant storage reads or nested lookups within loops.
+- **Gas Bounded Growth**: The CPU and Memory bounds are actively asserted in test suites to catch regressions before deployment.
+
+#### Documented Footprint Thresholds (10 Milestones Baseline)
+Using Soroban's native budget tracking (`Env::budget()`), the performance metrics for a representative 10-milestone vault are capped as follows:
+
+| Function | CPU Cost Threshold (Instructions) | Memory Cost Threshold (Bytes) | Storage Read Footprint |
+|----------|----------------------------------|-------------------------------|------------------------|
+| `create_vault` | < 600,000 | < 200,000 | $O(1)$ Flat |
+| `stake` | < 700,000 | < 200,000 | $O(1)$ Flat |
+| `check_in` | < 300,000 | < 100,000 | $O(1)$ Flat |
+| `claim` | < 900,000 | < 250,000 | $O(1)$ Flat |
+| `slash_on_miss`| < 900,000 | < 250,000 | $O(1)$ Flat |
+
 ### Building and Testing
+
 
 #### Prerequisites
 
