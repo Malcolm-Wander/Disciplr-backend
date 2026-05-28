@@ -6,6 +6,7 @@ import {
   isSorobanSubmitEnabled,
   setSorobanClient,
   resetSorobanClient,
+  createDefaultSorobanClient,
   type SorobanClient,
   type SorobanConfig,
 } from '../services/soroban.js'
@@ -73,18 +74,33 @@ const FULL_ENV = {
   SOROBAN_SECRET_KEY: 'SCZANGBA5YHTNYVVV3C7CAZMCLPVAR3LXKLHEADMPROMU3QAHZGOSN6A',
 }
 
+const FAST_SUBMIT_ENV = {
+  RETRY_MAX_ATTEMPTS: '2',
+  RETRY_BACKOFF_MS: '1',
+  SOROBAN_SUBMIT_POLL_INTERVAL_MS: '1',
+  SOROBAN_SUBMIT_POLL_MAX_ATTEMPTS: '3',
+  SOROBAN_RPC_TIMEOUT_MS: '50',
+  SOROBAN_SUBMIT_RETRY_MAX_BACKOFF_MS: '2',
+}
+
 const savedEnv: Record<string, string | undefined> = {}
+
+const rememberEnv = (key: string): void => {
+  if (!Object.prototype.hasOwnProperty.call(savedEnv, key)) {
+    savedEnv[key] = process.env[key]
+  }
+}
 
 const setEnv = (vars: Record<string, string>): void => {
   for (const [key, value] of Object.entries(vars)) {
-    savedEnv[key] = process.env[key]
+    rememberEnv(key)
     process.env[key] = value
   }
 }
 
 const clearSorobanEnv = (): void => {
-  for (const key of Object.keys(FULL_ENV)) {
-    savedEnv[key] = process.env[key]
+  for (const key of [...Object.keys(FULL_ENV), ...Object.keys(FAST_SUBMIT_ENV)]) {
+    rememberEnv(key)
     delete process.env[key]
   }
 }
@@ -96,6 +112,7 @@ const restoreEnv = (): void => {
     } else {
       process.env[key] = value
     }
+    delete savedEnv[key]
   }
 }
 
@@ -151,6 +168,19 @@ describe('soroban service', () => {
       expect(config!.contractId).toBe(FULL_ENV.SOROBAN_CONTRACT_ID)
       expect(config!.rpcUrl).toBe(FULL_ENV.SOROBAN_RPC_URL)
       expect(config!.secretKey).toBe(FULL_ENV.SOROBAN_SECRET_KEY)
+    })
+
+    it('includes bounded submit retry, poll, and timeout settings', () => {
+      setEnv({ ...FULL_ENV, ...FAST_SUBMIT_ENV })
+      const config = getSorobanConfig()
+
+      expect(config).not.toBeNull()
+      expect(config!.submitPollIntervalMs).toBe(1)
+      expect(config!.submitPollMaxAttempts).toBe(3)
+      expect(config!.rpcTimeoutMs).toBe(50)
+      expect(config!.submitRetry.maxAttempts).toBe(2)
+      expect(config!.submitRetry.initialBackoffMs).toBe(1)
+      expect(config!.submitRetry.maxBackoffMs).toBe(2)
     })
   })
 
@@ -294,7 +324,7 @@ describe('soroban service', () => {
       expect(passedArgs.vaultId).toBe(vault.id)
     })
 
-    it('returns error status when submission fails', async () => {
+    it('returns error status with generic message when submission fails with non-contract error', async () => {
       const { client } = createMockClient(undefined, new Error('RPC timeout'))
       setSorobanClient(client)
 
@@ -306,6 +336,25 @@ describe('soroban service', () => {
       expect(result.submission.attempted).toBe(true)
       expect(result.submission.status).toBe('error')
       expect(result.submission.error).toBe('RPC timeout')
+      expect(result.submission.txHash).toBeUndefined()
+    })
+
+    it('returns structured error when submission fails with contract error', async () => {
+      const { client } = createMockClient(undefined, new Error('HostError: Error(Contract, 4)'))
+      setSorobanClient(client)
+
+      const input = makeInput({ onChain: { mode: 'submit' } })
+      const vault = makeVault()
+
+      const result = await buildVaultCreationPayload(input, vault)
+
+      expect(result.submission.attempted).toBe(true)
+      expect(result.submission.status).toBe('error')
+      expect(result.submission.error).toEqual({
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid deadline',
+        details: { contractErrorCode: 4 },
+      })
       expect(result.submission.txHash).toBeUndefined()
     })
 
@@ -378,6 +427,133 @@ describe('soroban service', () => {
       await buildVaultCreationPayload(input, makeVault())
 
       expect(spy).not.toHaveBeenCalled()
+    })
+  })
+
+  // ─── Default Soroban client retry and polling behaviour ─────────
+
+  describe('defaultSorobanClient retry and polling', () => {
+    const makeFakeSdk = (server: Record<string, jest.Mock>) => {
+      class FakeContract {
+        call = jest.fn(() => ({ type: 'operation' }))
+      }
+
+      class FakeTransactionBuilder {
+        addOperation = jest.fn(() => this)
+        setTimeout = jest.fn(() => this)
+        build = jest.fn(() => ({ type: 'transaction' }))
+      }
+
+      return {
+        Keypair: { fromSecret: jest.fn(() => ({ publicKey: jest.fn() })) },
+        Contract: FakeContract,
+        rpc: { SorobanRpc: undefined, Server: jest.fn(() => server) },
+        Networks: {},
+        TransactionBuilder: FakeTransactionBuilder,
+        nativeToScVal: jest.fn((value: unknown) => value),
+        BASE_FEE: '100',
+      }
+    }
+
+    const makeSubmitConfig = (): SorobanConfig => {
+      setEnv({ ...FULL_ENV, ...FAST_SUBMIT_ENV })
+      const config = getSorobanConfig()
+      expect(config).not.toBeNull()
+      return config!
+    }
+
+    it('retries transient getAccount failures with backoff', async () => {
+      const server = {
+        getAccount: jest
+          .fn()
+          .mockRejectedValueOnce(new Error('connection reset'))
+          .mockResolvedValue({ accountId: FULL_ENV.SOROBAN_SOURCE_ACCOUNT }),
+        prepareTransaction: jest.fn().mockResolvedValue({ sign: jest.fn() }),
+        sendTransaction: jest.fn().mockResolvedValue({ status: 'PENDING', hash: 'tx-retry-account' }),
+        getTransaction: jest.fn().mockResolvedValue({ status: 'SUCCESS' }),
+      }
+      const client = createDefaultSorobanClient(async () => makeFakeSdk(server))
+
+      await expect(client.submitVaultCreation(makeSubmitConfig(), makeVault() as any)).resolves.toEqual({
+        txHash: 'tx-retry-account',
+      })
+
+      expect(server.getAccount).toHaveBeenCalledTimes(2)
+      expect(server.sendTransaction).toHaveBeenCalledTimes(1)
+    })
+
+    it('retries transient sendTransaction failures before polling', async () => {
+      const server = {
+        getAccount: jest.fn().mockResolvedValue({ accountId: FULL_ENV.SOROBAN_SOURCE_ACCOUNT }),
+        prepareTransaction: jest.fn().mockResolvedValue({ sign: jest.fn() }),
+        sendTransaction: jest
+          .fn()
+          .mockRejectedValueOnce(new Error('RPC timeout'))
+          .mockResolvedValue({ status: 'PENDING', hash: 'tx-retry-send' }),
+        getTransaction: jest.fn().mockResolvedValue({ status: 'SUCCESS' }),
+      }
+      const client = createDefaultSorobanClient(async () => makeFakeSdk(server))
+
+      await expect(client.submitVaultCreation(makeSubmitConfig(), makeVault() as any)).resolves.toEqual({
+        txHash: 'tx-retry-send',
+      })
+
+      expect(server.sendTransaction).toHaveBeenCalledTimes(2)
+      expect(server.getTransaction).toHaveBeenCalledTimes(1)
+    })
+
+    it('uses configurable polling interval and max attempts', async () => {
+      const server = {
+        getAccount: jest.fn().mockResolvedValue({ accountId: FULL_ENV.SOROBAN_SOURCE_ACCOUNT }),
+        prepareTransaction: jest.fn().mockResolvedValue({ sign: jest.fn() }),
+        sendTransaction: jest.fn().mockResolvedValue({ status: 'PENDING', hash: 'tx-polled' }),
+        getTransaction: jest
+          .fn()
+          .mockResolvedValueOnce({ status: 'NOT_FOUND' })
+          .mockResolvedValueOnce({ status: 'NOT_FOUND' })
+          .mockResolvedValue({ status: 'SUCCESS' }),
+      }
+      const client = createDefaultSorobanClient(async () => makeFakeSdk(server))
+
+      await expect(client.submitVaultCreation(makeSubmitConfig(), makeVault() as any)).resolves.toEqual({
+        txHash: 'tx-polled',
+      })
+
+      expect(server.getTransaction).toHaveBeenCalledTimes(3)
+    })
+
+    it('fails when polling exhausts the configured max attempts', async () => {
+      const server = {
+        getAccount: jest.fn().mockResolvedValue({ accountId: FULL_ENV.SOROBAN_SOURCE_ACCOUNT }),
+        prepareTransaction: jest.fn().mockResolvedValue({ sign: jest.fn() }),
+        sendTransaction: jest.fn().mockResolvedValue({ status: 'PENDING', hash: 'tx-not-found' }),
+        getTransaction: jest.fn().mockResolvedValue({ status: 'NOT_FOUND' }),
+      }
+      const client = createDefaultSorobanClient(async () => makeFakeSdk(server))
+
+      await expect(client.submitVaultCreation(makeSubmitConfig(), makeVault() as any)).rejects.toThrow(
+        'Soroban transaction did not succeed: NOT_FOUND',
+      )
+
+      expect(server.getTransaction).toHaveBeenCalledTimes(3)
+    })
+
+    it('bounds stalled RPC calls with a timeout', async () => {
+      setEnv({ ...FULL_ENV, ...FAST_SUBMIT_ENV, RETRY_MAX_ATTEMPTS: '1', SOROBAN_RPC_TIMEOUT_MS: '1' })
+      const config = getSorobanConfig()
+      expect(config).not.toBeNull()
+
+      const server = {
+        getAccount: jest.fn(() => new Promise(() => {})),
+        prepareTransaction: jest.fn(),
+        sendTransaction: jest.fn(),
+        getTransaction: jest.fn(),
+      }
+      const client = createDefaultSorobanClient(async () => makeFakeSdk(server))
+
+      await expect(client.submitVaultCreation(config!, makeVault() as any)).rejects.toThrow(
+        'Soroban RPC getAccount timed out after 1ms',
+      )
     })
   })
 

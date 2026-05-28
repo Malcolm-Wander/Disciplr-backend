@@ -11,7 +11,7 @@ import { parseEnqueueOptions } from '../jobs/enqueueOptions.js'
 import { authenticate, authorize } from '../middleware/auth.js'
 import { requireJson } from '../middleware/requireJson.js'
 import { strictRateLimiter } from '../middleware/rateLimiter.js'
-import { createAuditLog } from '../lib/audit-logs.js'
+import * as auditLogs from '../lib/audit-logs.js'
 import { formatValidationError, utcTimestampSchema } from '../lib/validation.js'
 
 // Helpers
@@ -97,12 +97,50 @@ export const createJobsRouter = (jobSystem: BackgroundJobSystem, options: JobsRo
 
   // All jobs endpoints require an authenticated admin
   jobsRouter.use(authenticate)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   jobsRouter.use(authorize([UserRole.ADMIN]))
 
   // GET /metrics — internal queue metrics (admin only)
   jobsRouter.get('/metrics', (_req, res) => {
     res.json(jobSystem.getMetrics())
+  })
+
+  // GET /deadletters — inspect failed jobs that exhausted retries
+  jobsRouter.get('/deadletters', (_req, res) => {
+    res.json({ deadLetters: jobSystem.getDeadLetters() })
+  })
+
+  // GET /deadletters/:id — inspect a single dead-letter job
+  jobsRouter.get('/deadletters/:id', (req, res) => {
+    const entry = jobSystem.getDeadLetter(req.params.id)
+    if (!entry) {
+      res.status(404).json({ error: 'Dead-letter job not found' })
+      return
+    }
+    res.json(entry)
+  })
+
+  // POST /deadletters/:id/replay — replay a dead-letter job back into the queue
+  jobsRouter.post('/deadletters/:id/replay', (req, res) => {
+    try {
+      const receipt = jobSystem.replayDeadLetter(req.params.id)
+      auditLogs.createAuditLog({
+        actor_user_id: req.user!.userId,
+        action: 'job.deadletter.replay',
+        target_type: 'job',
+        target_id: req.params.id,
+        metadata: {
+          replayedJobId: receipt.id,
+          jobType: receipt.type,
+          maxAttempts: receipt.maxAttempts,
+        },
+      })
+
+      res.status(202).json({ replayed: true, job: receipt })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to replay dead-letter job'
+      res.status(404).json({ error: message })
+    }
   })
 
   // GET /health — queue health status (admin only)

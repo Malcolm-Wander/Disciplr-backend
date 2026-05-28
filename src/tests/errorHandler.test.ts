@@ -82,6 +82,35 @@ describe('AppError factories', () => {
     expect(e.code).toBe(ErrorCode.UNPROCESSABLE)
     expect(e.message).toBe('cannot process')
   })
+
+  describe('fromContractError', () => {
+    it('parses valid Soroban Error(Contract, 4) into VALIDATION_ERROR', () => {
+      const e = AppError.fromContractError(new Error('HostError: Error(Contract, 4)'))
+      expect(e).not.toBeNull()
+      expect(e?.status).toBe(400)
+      expect(e?.code).toBe(ErrorCode.VALIDATION_ERROR)
+      expect(e?.message).toBe('Invalid deadline')
+      expect(e?.details).toEqual({ contractErrorCode: 4 })
+    })
+
+    it('parses ContractError(12) into CONFLICT (Deadline passed)', () => {
+      const e = AppError.fromContractError('Some RPC failure ContractError(12)')
+      expect(e).not.toBeNull()
+      expect(e?.status).toBe(409)
+      expect(e?.code).toBe(ErrorCode.CONFLICT)
+      expect(e?.message).toBe('Deadline passed')
+    })
+
+    it('returns null for unmapped error codes', () => {
+      const e = AppError.fromContractError(new Error('Error(Contract, 999)'))
+      expect(e).toBeNull()
+    })
+
+    it('returns null for generic errors without contract codes', () => {
+      const e = AppError.fromContractError(new Error('Network timeout'))
+      expect(e).toBeNull()
+    })
+  })
 })
 
 // ─── errorHandler middleware ──────────────────────────────────────────────────
