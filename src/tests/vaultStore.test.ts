@@ -5,7 +5,7 @@ import {
   getVaultRevisionById,
   resetVaultStore,
   updateVaultById,
-} from "./vaultStore.js";
+} from "../services/vaultStore.js";
 
 const stellar = (): string => `G${"A".repeat(55)}`;
 

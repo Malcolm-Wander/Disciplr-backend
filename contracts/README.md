@@ -1,92 +1,73 @@
-# Contracts — Error Code Catalog
+# Disciplr Smart Contracts
 
-This document is the authoritative reference for every error code surfaced by the
-`accountability_vault` contract and mapped by the backend in
-`src/middleware/errorHandler.ts`.
+Soroban smart contracts for the Disciplr accountability vault system on Stellar.
 
-Keeping this catalog in sync with both the contract and the backend mapping is a
-hard requirement: the string codes are part of the public API contract and **must
-not be renamed or renumbered**.
+## accountability_vault
 
----
+A time-locked capital vault that releases funds to a `success_destination` when
+all milestones are verified, or sweeps them to a `failure_destination` when the
+deadline passes without full verification.
 
-## Error Response Envelope
+### Entry points
 
-All API errors are returned as a uniform JSON envelope:
+| Function | Description |
+|---|---|
+| `initialize` | Create a new vault with creator, destinations, token, amount, deadline, and milestone count |
+| `check_in(verifier, milestone_index)` | Record a verified milestone (verifier must sign) |
+| `claim()` | Release funds to `success_destination` — requires all milestones verified |
+| `slash_on_miss()` | Sweep funds to `failure_destination` — requires deadline passed |
+| `get_vault()` | Read current vault state |
+| `get_check_in(milestone_index)` | Read a check-in entry |
 
-```json
-{
-  "error": {
-    "code": "ERROR_CODE",
-    "message": "Human-readable description",
-    "details": {},
-    "requestId": "req-abc-123"
-  }
-}
+### Storage TTL (Issue #359)
+
+Soroban persistent storage entries are subject to archival if their TTL expires.
+For long-running vaults this is a risk: a vault created months before its
+`end_timestamp` could be archived before settlement.
+
+**Strategy:** every write and read of an active vault bumps the TTL of the
+`Vault` and `CheckIn` entries to at least `end_timestamp` (computed as
+`(end_timestamp - now) / 5 ledgers-per-second`, clamped to a minimum of
+`MIN_TTL_LEDGERS = 17_280` ≈ 1 day).
+
+Terminal vaults (`Completed` / `Slashed`) are **not** extended — they can be
+archived once settled.
+
+**Operator note:** if a vault's `end_timestamp` is more than ~6 months in the
+future, operators should monitor the Stellar network's `max_entry_ttl` parameter
+and call `get_vault()` periodically to keep the entry alive.
+
+### Settlement-summary event (Issue #373)
+
+Both `claim` and `slash_on_miss` emit a `settlement_summary` event so the
+backend ETL pipeline (`src/services/etlWorker.ts`) can compute success-rate
+analytics without re-querying the ledger.
+
+**Topic:** `["settle"]`
+
+**Data:** `(released_amount: i128, slashed_amount: i128, verified_count: u32, final_status: Symbol)`
+
+| Field | `claim` | `slash_on_miss` |
+|---|---|---|
+| `released_amount` | vault amount | `0` |
+| `slashed_amount` | `0` | vault amount |
+| `verified_count` | milestone_count | partial count |
+| `final_status` | `"completed"` | `"slashed"` |
+
+The event type `settlement_summary` is registered in
+`src/types/horizonSync.ts` (`EventType` union) so `src/services/eventParser.ts`
+can route it to the analytics pipeline.
+
+### Building
+
+```bash
+cd contracts/accountability_vault
+cargo build --target wasm32-unknown-unknown --release
 ```
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `code` | string | Yes | Machine-readable code — use this for programmatic branching |
-| `message` | string | Yes | Human-readable description |
-| `details` | object | No | Field-level detail; only present on `VALIDATION_ERROR` |
-| `requestId` | string | No | Echoed from `x-request-id` header for correlation |
+### Testing
 
----
-
-## Error Code Catalog
-
-The table below maps every `ErrorCode` constant defined in
-`src/middleware/errorHandler.ts` to its HTTP status, meaning, and the
-`AppError` factory method that produces it.
-
-| # | Code | HTTP Status | Meaning | Factory / Trigger |
-|---|------|-------------|---------|-------------------|
-| 1 | `VALIDATION_ERROR` | 400 | Request payload failed schema validation. Includes field-level `details`. | `AppError.validation(msg, details)` |
-| 2 | `BAD_REQUEST` | 400 | Malformed request syntax or invalid parameter that is not a schema violation. | `AppError.badRequest(msg, details?)` |
-| 3 | `UNAUTHORIZED` | 401 | Authentication is required or the supplied credentials are invalid. | `AppError.unauthorized(msg?)` |
-| 4 | `FORBIDDEN` | 403 | Authenticated but not authorised for the requested resource or action. | `AppError.forbidden(msg?)` |
-| 5 | `NOT_FOUND` | 404 | The requested resource does not exist. Also emitted by the `notFound` middleware for unknown routes. | `AppError.notFound(msg?)` |
-| 6 | `CONFLICT` | 409 | Resource state conflict, e.g. duplicate entry or concurrent modification. | `AppError.conflict(msg)` |
-| 7 | `PAYLOAD_TOO_LARGE` | 413 | Request body exceeds the configured size limit. Auto-converted from express body-parser `entity.too.large` errors. | `AppError.payloadTooLarge(msg?)` |
-| 8 | `UNPROCESSABLE` | 422 | Business-logic violation that cannot be resolved by the client changing the request format, e.g. deleting the last admin. | `AppError.unprocessable(msg)` |
-| 9 | `RATE_LIMITED` | 429 | The caller has exceeded the allowed request rate for this endpoint. | `AppError.rateLimited(msg?)` |
-| 10 | `INTERNAL_ERROR` | 500 | Unexpected server-side error. The response message is always the generic string `"Internal server error"` — no internals are leaked. | `AppError.internal(msg?)` |
-
----
-
-## Factory Method Reference
-
-```typescript
-// src/middleware/errorHandler.ts
-
-AppError.validation(message, details?)   // → 400 VALIDATION_ERROR
-AppError.badRequest(message, details?)   // → 400 BAD_REQUEST
-AppError.unauthorized(message?)          // → 401 UNAUTHORIZED
-AppError.forbidden(message?)             // → 403 FORBIDDEN
-AppError.notFound(message?)              // → 404 NOT_FOUND
-AppError.conflict(message)               // → 409 CONFLICT
-AppError.payloadTooLarge(message?)       // → 413 PAYLOAD_TOO_LARGE
-AppError.unprocessable(message)          // → 422 UNPROCESSABLE
-AppError.rateLimited(message?)           // → 429 RATE_LIMITED
-AppError.internal(message?)              // → 500 INTERNAL_ERROR
+```bash
+cd contracts/accountability_vault
+cargo test
 ```
-
----
-
-## Stability Guarantee
-
-The numeric index in the catalog table above is for documentation ordering only.
-The **string code values** (e.g. `"VALIDATION_ERROR"`) are the stable identifiers
-consumed by clients and must never be changed. Adding a new code is a
-backwards-compatible change; removing or renaming an existing code is a breaking
-change and requires a major API version bump.
-
----
-
-## Cross-References
-
-- Backend implementation: [`src/middleware/errorHandler.ts`](../src/middleware/errorHandler.ts)
-- Error envelope contract: [`docs/error-contract.md`](../docs/error-contract.md)
-- Unit tests: [`src/tests/errorHandler.test.ts`](../src/tests/errorHandler.test.ts)
-- Body-size limit test: [`src/tests/bodyLimit.test.ts`](../src/tests/bodyLimit.test.ts)
