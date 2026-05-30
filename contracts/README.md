@@ -9,11 +9,21 @@ The `accountability_vault` contract implements time-locked capital vaults on Ste
 ### Overview
 
 The accountability vault allows users to:
+- Host multiple independent vaults on a single contract deployment, keyed by a unique `vault_id`
 - Lock funds in a vault with a total amount
 - Define milestones with individual amounts that must sum to the total
 - Specify a verifier authorized to validate milestone completion
 - Set success and failure destinations for fund release
- - Allow reclaiming residual (dust) token balances to the creator after settlement
+- Allow reclaiming residual (dust) token balances to the creator after settlement
+
+### Storage Layout
+
+The contract uses **Persistent** storage for all vault-related data to support multiple vaults and long-term data retention.
+
+- **Vault Config**: `DataKey::Vault(vault_id: String)` -> `Vault` struct.
+- **Check-ins**: `DataKey::CheckIn(vault_id: String, milestone_index: u32)` -> `u64` (timestamp).
+
+All persistent keys have a default TTL extension of 30 days, which is automatically bumped on each access (as of the current implementation).
 
 ### Arithmetic Safety
 
