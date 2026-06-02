@@ -64,6 +64,17 @@ addresses from the verifier set (or the optional oracle) have approved it.
 - The threshold must be ≥ 1 and ≤ `verifiers.len()`; otherwise `create_vault` returns
   `Error::InvalidThreshold`.
 
+#### Token Admin Balance Conservation
+
+The token admin account is only used in tests to mint initial balances to the creator and
+must not be debited or credited by vault lifecycle operations. Invariant tests assert that
+the token admin balance is unchanged across:
+
+- success path: `stake -> check_in -> claim`
+- slash path: `stake -> slash_on_miss`
+
+This guards against unintended mint/burn side effects during settlement flows.
+
 #### Evidence Hash Binding
 
 `check_in` accepts an `evidence_hash: BytesN<32>` parameter — a 32-byte digest (e.g.

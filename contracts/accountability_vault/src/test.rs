@@ -26,6 +26,7 @@ struct Setup {
     env: Env,
     contract: AccountabilityVaultClient<'static>,
     token: Address,
+    token_admin: Address,
     #[allow(dead_code)]
     token_admin_client: token::StellarAssetClient<'static>,
     creator: Address,
@@ -97,6 +98,7 @@ fn setup_with_oracle(
         env,
         contract,
         token,
+        token_admin,
         token_admin_client,
         creator,
         verifier,
@@ -105,6 +107,18 @@ fn setup_with_oracle(
         failure,
         vault_id,
     }
+}
+
+fn assert_token_admin_balance_unchanged(
+    token_client: &token::Client<'_>,
+    token_admin: &Address,
+    expected_balance: i128,
+) {
+    assert_eq!(
+        token_client.balance(token_admin),
+        expected_balance,
+        "token admin balance must remain unchanged by vault lifecycle operations",
+    );
 }
 
 // ── existing lifecycle tests ─────────────────────────────────────────────────
@@ -164,6 +178,45 @@ fn test_slash_on_miss() {
 
     let token_client = token::Client::new(&s.env, &s.token);
     assert_eq!(token_client.balance(&s.failure), 500);
+}
+
+#[test]
+fn test_token_admin_balance_invariant_success_lifecycle() {
+    let s = setup(&[100, 200], &[300, 700]);
+    let token_client = token::Client::new(&s.env, &s.token);
+    let admin_balance_before = token_client.balance(&s.token_admin);
+
+    // Stake should only move creator -> vault.
+    s.contract.stake(&s.vault_id, &s.creator);
+    assert_token_admin_balance_unchanged(&token_client, &s.token_admin, admin_balance_before);
+
+    // Check-ins should not move any tokens.
+    s.contract
+        .check_in(&s.vault_id, &s.verifier, &0, &evidence_hash(&s.env, 7));
+    assert_token_admin_balance_unchanged(&token_client, &s.token_admin, admin_balance_before);
+    s.contract
+        .check_in(&s.vault_id, &s.verifier, &1, &evidence_hash(&s.env, 9));
+    assert_token_admin_balance_unchanged(&token_client, &s.token_admin, admin_balance_before);
+
+    // Claim should move vault -> success destination only.
+    s.contract.claim(&s.vault_id, &s.creator);
+    assert_token_admin_balance_unchanged(&token_client, &s.token_admin, admin_balance_before);
+}
+
+#[test]
+fn test_token_admin_balance_invariant_slash_lifecycle() {
+    let s = setup(&[100], &[500]);
+    let token_client = token::Client::new(&s.env, &s.token);
+    let admin_balance_before = token_client.balance(&s.token_admin);
+
+    // Stake should only move creator -> vault.
+    s.contract.stake(&s.vault_id, &s.creator);
+    assert_token_admin_balance_unchanged(&token_client, &s.token_admin, admin_balance_before);
+
+    // Slash should move vault -> failure destination only.
+    s.env.ledger().set_timestamp(2_000);
+    s.contract.slash_on_miss(&s.vault_id);
+    assert_token_admin_balance_unchanged(&token_client, &s.token_admin, admin_balance_before);
 }
 
 #[test]
