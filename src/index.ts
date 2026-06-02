@@ -24,13 +24,17 @@ import {
 import { initializeDatabase, closeDatabase } from './db/database.js'
 import { etlWorker } from './services/etlWorker.js'
 import { createShutdownHandler } from './server/shutdown.js'
+import { getEnv } from './config/index.js'
+import { createNotificationService } from './services/notifications/factory.js'
 
 const PORT = process.env.PORT ?? 3000
 
 // Initialize SQLite database for analytics
 initializeDatabase()
 
-const { jobSystem } = bootstrapApp()
+const env = getEnv()
+const notificationService = createNotificationService(env.NOTIFICATION_PROVIDER)
+const { jobSystem } = bootstrapApp({ notificationService })
 
 jobSystem.start()
 

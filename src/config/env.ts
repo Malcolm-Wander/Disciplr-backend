@@ -41,6 +41,9 @@ export const envSchema = z
     NODE_ENV: z
       .enum(["development", "production", "test"])
       .default("development"),
+    LOG_LEVEL: z
+      .enum(["debug", "info", "warn", "error"])
+      .default("info"),
     PORT: positiveInt(3000),
     SERVICE_NAME: z.string().default("disciplr-backend"),
     DATABASE_URL: z.string().min(1, "DATABASE_URL is required").refine(
@@ -114,6 +117,7 @@ export const envSchema = z
     JOB_QUEUE_POLL_INTERVAL_MS: positiveInt(250),
     JOB_HISTORY_LIMIT: positiveInt(50),
     ENABLE_JOB_SCHEDULER: z.string().optional(),
+    NOTIFICATION_PROVIDER: z.enum(["email", "console"]).default("console"),
 
     // ── ETL ───────────────────────────────────────────────────────
     ETL_INTERVAL_MINUTES: positiveInt(5),

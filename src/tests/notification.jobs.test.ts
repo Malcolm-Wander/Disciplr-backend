@@ -1,36 +1,29 @@
 import { describe, it, expect, jest, beforeEach } from '@jest/globals'
 import { BackgroundJobSystem } from '../jobs/system.js'
 import { NotificationService } from '../services/notifications/factory.js'
-import { EmailNotificationProvider } from '../services/notifications/email.provider.js'
-
-// Mock NotificationService
-const mockNotificationService = {
-  send: jest.fn<any>(),
-  getProvider: jest.fn<any>()
-}
-
-jest.unstable_mockModule('../services/notifications/factory.js', () => ({
-  NotificationService: mockNotificationService
-}))
+import type { NotificationProvider } from '../services/notifications/provider.js'
 
 describe('Notification Job Execution', () => {
   let jobSystem: any
-  let NotificationService: any
+  let sendMock: ReturnType<typeof jest.fn<any>>
 
-  beforeEach(async () => {
-    mockNotificationService.send.mockReset()
+  beforeEach(() => {
+    sendMock = jest.fn<any>()
     jest.clearAllMocks()
-    
-    const systemModule = await import('../jobs/system.js')
-    const BackgroundJobSystem = systemModule.BackgroundJobSystem
-    const factoryModule = await import('../services/notifications/factory.js')
-    NotificationService = factoryModule.NotificationService
 
     process.env.JOB_WORKER_CONCURRENCY = '1'
     process.env.JOB_QUEUE_POLL_INTERVAL_MS = '10'
     process.env.ENABLE_JOB_SCHEDULER = 'false'
-    
-    jobSystem = new BackgroundJobSystem()
+
+    const stubProvider: NotificationProvider = {
+      name: 'stub',
+      send: sendMock,
+    }
+    const notificationService = new NotificationService(
+      { stub: stubProvider },
+      'stub',
+    )
+    jobSystem = new BackgroundJobSystem(notificationService)
   })
 
   it('should execute notification.send job using the provider', async () => {
@@ -40,7 +33,6 @@ describe('Notification Job Execution', () => {
       body: 'World',
     }
 
-    const sendMock = mockNotificationService.send
     sendMock.mockResolvedValueOnce(undefined)
 
     const receipt = jobSystem.enqueue('notification.send', payload)
@@ -65,7 +57,6 @@ describe('Notification Job Execution', () => {
       body: 'Content',
     }
 
-    const sendMock = mockNotificationService.send
     // Fail the first time, succeed the second time
     sendMock
       .mockRejectedValueOnce(new Error('Network Error'))
@@ -97,7 +88,6 @@ describe('Notification Job Execution', () => {
       body: 'Content',
     }
 
-    const sendMock = mockNotificationService.send
     sendMock.mockRejectedValue(new Error('Persistent Error'))
 
     const receipt = jobSystem.enqueue('notification.send', payload, { maxAttempts: 1 })

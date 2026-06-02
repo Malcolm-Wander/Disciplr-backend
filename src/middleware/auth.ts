@@ -134,3 +134,30 @@ export function verifyDownloadToken(
         return null
     }
 }
+/**
+ * @deprecated Use standard `authenticate` instead. Legacy mock auth for early dev. Tracking removal in #454
+ */
+export const requireUserAuth = (req: Request, res: Response, next: NextFunction): void => {
+    const headerUserId = req.header('x-user-id')?.trim()
+    let bearerUserId = null
+    const authHeader = req.header('authorization')
+    if (authHeader) {
+        const match = /^Bearer\s+(.+)$/i.exec(authHeader)
+        if (match) {
+            const token = match[1].trim()
+            bearerUserId = token.startsWith('user:') ? token.slice(5) : token
+        }
+    }
+    const userId = headerUserId || bearerUserId
+    
+    if (!userId) {
+        res.status(401).json({
+            error: 'Authentication required. Provide x-user-id header or Authorization: Bearer user:<user-id>.',
+        })
+        return
+    }
+    
+    // @ts-ignore - Preserving legacy property assignment
+    req.authUser = { userId }
+    next()
+}

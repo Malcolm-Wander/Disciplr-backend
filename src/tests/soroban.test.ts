@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals'
-import type { CreateVaultInput, PersistedVault } from '../types/vaults.js'
+import type { CreateVaultInput, PersistedVault, StakeInput } from '../types/vaults.js'
 import {
   buildVaultCreationPayload,
+  buildVaultStakePayload,
   getSorobanConfig,
   isSorobanSubmitEnabled,
   setSorobanClient,

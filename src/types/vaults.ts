@@ -57,6 +57,35 @@ export interface PersistedVault {
   lateCheckInWindowSecs: number
 }
 
+export interface StakeInput {
+  vaultId: string
+  amount: string
+  user: string
+  onChain?: {
+    mode?: 'build' | 'submit'
+    contractId?: string
+    networkPassphrase?: string
+    sourceAccount?: string
+  }
+}
+
+export interface StakeResponse {
+  mode: 'build' | 'submit'
+  payload: {
+    contractId: string
+    networkPassphrase: string
+    sourceAccount: string
+    method: 'stake'
+    args: Record<string, unknown>
+  }
+  submission: {
+    attempted: boolean
+    status: 'not_requested' | 'not_configured' | 'success' | 'error'
+    txHash?: string
+    error?: string
+  }
+}
+
 export interface VaultCreateResponse {
   vault: PersistedVault
   onChain: {

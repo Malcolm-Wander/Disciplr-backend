@@ -3,6 +3,7 @@ import type { Pool } from 'pg'
 import type { ApiKeyAuthContext, ApiKeyRecord, ApiScope } from '../types/auth.js'
 import { utcNow } from '../utils/timestamps.js'
 import { getPgPool } from '../db/pool.js'
+import * as argon2 from 'argon2'
 
 interface CreateApiKeyInput {
   userId?: string

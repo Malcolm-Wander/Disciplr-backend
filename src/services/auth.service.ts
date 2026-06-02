@@ -27,7 +27,8 @@ export class AuthService {
     }
 
     static async login(input: LoginInput) {
-        const user = await getPrisma().user.findUnique({ where: { email: input.email } })
+        const prisma = getPrisma()
+        const user = await prisma.user.findUnique({ where: { email: input.email } })
         if (!user) {
             throw new Error('Invalid credentials')
         }
@@ -37,31 +38,38 @@ export class AuthService {
             throw new Error('Invalid credentials')
         }
 
-        await getPrisma().user.update({
-            where: { id: user.id },
-            data: { lastLoginAt: new Date() },
-        })
-
         const jti = randomUUID()
+        const sessionId = randomUUID()
+        const lastLoginAt = new Date()
         const accessToken = generateAccessToken({ userId: user.id, role: user.role, jti })
         const refreshTokenValue = generateRefreshToken({ userId: user.id })
-
-        // 1. Record session for access token (middleware/auth.ts compatibility)
         const accessExpiresAt = new Date(Date.now() + 15 * 60 * 1000) // 15 minutes
-        await recordSession(user.id, jti, accessExpiresAt)
-
-        // 2. Store hashed refresh token — the raw value is only returned to the client
         const tokenHash = hashToken(refreshTokenValue)
-        await getPrisma().refreshToken.create({
-            data: {
-                token: tokenHash,
-                userId: user.id,
-                expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
-            },
+
+        const loggedInUser = await prisma.$transaction(async (tx) => {
+            const updatedUser = await tx.user.update({
+                where: { id: user.id },
+                data: { lastLoginAt },
+            })
+
+            await tx.$executeRaw`
+                INSERT INTO "sessions" ("id", "user_id", "jti", "expires_at")
+                VALUES (${sessionId}, ${user.id}, ${jti}, ${accessExpiresAt})
+            `
+
+            await tx.refreshToken.create({
+                data: {
+                    token: tokenHash,
+                    userId: user.id,
+                    expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
+                },
+            })
+
+            return updatedUser
         })
 
         return {
-            user: { id: user.id, email: user.email, role: user.role },
+            user: { id: loggedInUser.id, email: loggedInUser.email, role: loggedInUser.role },
             accessToken,
             refreshToken: refreshTokenValue,
         }

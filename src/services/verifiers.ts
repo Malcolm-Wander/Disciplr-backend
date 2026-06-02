@@ -1,5 +1,6 @@
 import { createAuditLog, AuditLog } from '../lib/audit-logs.js'
 import { db } from '../db/knex.js'
+import type { Knex } from 'knex'
 
 export type VerifierStatus = 'pending' | 'approved' | 'suspended' | 'deactivated'
 export type VerificationResult = 'approved' | 'rejected'
@@ -208,8 +209,10 @@ export const recordVerification = async (
   result: VerificationResult,
   disputed = false,
   evidenceHash?: string,
+  trx?: Knex.Transaction,
 ): Promise<VerificationRecord> => {
-  const existing = await db('verifications')
+  const client = trx ?? db
+  const existing = await client('verifications')
     .where({
       verifier_user_id: verifierUserId,
       target_id: targetId,
@@ -224,7 +227,7 @@ export const recordVerification = async (
     throw new VerificationConflictError()
   }
 
-  const [rec] = await db('verifications')
+  const [rec] = await client('verifications')
     .insert({
       verifier_user_id: verifierUserId,
       target_id: targetId,

@@ -1,6 +1,7 @@
 import db from '../db/index.js'
 import { BackgroundJobSystem } from '../jobs/system.js'
 import { getIdempotentResponse, saveIdempotentResponse } from './idempotency.js'
+import { createNotificationService } from './notifications/factory.js'
 
 const BATCH_SIZE = 50
 
@@ -12,7 +13,9 @@ let _defaultJobSystem: BackgroundJobSystem | null = null
 
 const getDefaultJobSystem = (): BackgroundJobSystem => {
   if (!_defaultJobSystem) {
-    _defaultJobSystem = new BackgroundJobSystem()
+    _defaultJobSystem = new BackgroundJobSystem(
+      createNotificationService(process.env.NOTIFICATION_PROVIDER ?? 'console'),
+    )
   }
   return _defaultJobSystem
 }
@@ -81,6 +84,21 @@ export const startExpirationChecker = (intervalMs = 60_000, jobSystem?: Backgrou
       await enqueueSlashJobs(expired, resolvedJobSystem)
     } catch (error) {
       console.error('[ExpirationChecker] Check failed:', error)
+    } finally {
+      try {
+        const now = new Date()
+        await db('scheduler_heartbeats')
+          .insert({
+            name: 'expiration_scheduler',
+            last_run_at: now,
+          })
+          .onConflict('name')
+          .merge({
+            last_run_at: now,
+          })
+      } catch (error) {
+        console.error('[ExpirationChecker] Failed to record heartbeat:', error)
+      }
     }
   }
 

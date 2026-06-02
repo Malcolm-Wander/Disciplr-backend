@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { z } from 'zod'
-import { requireUserAuth } from '../middleware/userAuth.js'
+import { requireUserAuth } from '../middleware/auth.js'
 import { apiKeyRateLimiter } from '../middleware/rateLimiter.js'
 import {
   createApiKey,

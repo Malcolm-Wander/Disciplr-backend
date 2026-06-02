@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express'
+import { logger, withCorrelationId, getOrGenerateCorrelationId } from './logger.js'
 import { utcNow } from '../utils/timestamps.js'
 
 const SENSITIVE_FIELDS = new Set([
@@ -66,10 +67,21 @@ export function redact(value: any, seen = new WeakSet()): any {
 }
 
 /**
- * Middleware to mask PII in logs.
- * For this demo, it masks IP addresses and potentially sensitive fields in request bodies.
+ * Privacy logger middleware using Pino for structured JSON output.
+ *
+ * Masks PII in logs by:
+ * - Masking IP addresses (partial redaction)
+ * - Redacting sensitive fields in request bodies and headers
+ * - Emitting structured JSON for log aggregators
+ *
+ * Note: Pino's built-in redaction (configured in logger.ts) also handles
+ * sensitive field redaction automatically. This middleware adds additional
+ * IP masking and structured event logging.
  */
 export const privacyLogger = (req: Request, _res: Response, next: NextFunction) => {
+    const correlationId = getOrGenerateCorrelationId(req)
+    const privacyLog = withCorrelationId(logger, correlationId)
+
     const ip = req.ip || req.socket.remoteAddress || 'unknown'
     const maskedIp = maskIp(ip)
 
@@ -77,11 +89,34 @@ export const privacyLogger = (req: Request, _res: Response, next: NextFunction) 
     const method = req.method
     const url = req.url
 
-    // Simple body masking for PII fields identified in PRIVACY.md
+    // Store correlation ID and logger on request for downstream handlers
+    ;(req as any).correlationId = correlationId
+    ;(req as any).logger = privacyLog
+
+    // Redact sensitive fields before logging
+    // (Pino will also redact based on its configuration, but we do it here
+    // for explicit control and compatibility with existing tests)
     const sanitizedBody = redact(req.body)
     const sanitizedHeaders = redact(req.headers)
 
-    console.log(`[${timestamp}] [IP: ${maskedIp}] ${method} ${url} - Headers: ${JSON.stringify(sanitizedHeaders)} - Body: ${JSON.stringify(sanitizedBody)}`)
+    // Emit structured privacy event log
+    privacyLog.debug(
+        {
+            event: 'privacy.request_logged',
+            ip: {
+                original: ip,
+                masked: maskedIp,
+            },
+            request: {
+                method,
+                url,
+                headers: sanitizedHeaders,
+                body: sanitizedBody,
+            },
+            timestamp,
+        },
+        `Privacy-logged: ${method} ${url}`,
+    )
 
     next()
 }

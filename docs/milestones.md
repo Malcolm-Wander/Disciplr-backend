@@ -111,3 +111,123 @@ Successful validation emits:
 - Prevents IDOR by validating milestone belongs to specified vault
 - Idempotent to prevent replay attacks
 - All validation attempts logged with actor information
+
+---
+
+## pgvector — Milestone Embeddings (Similarity Search)
+
+### Overview
+
+The `milestone_embeddings` table stores 768-dimensional vector embeddings for milestone evidence text. These are used to detect near-duplicate or low-effort submissions by performing cosine-similarity search via the [pgvector](https://github.com/pgvector/pgvector) PostgreSQL extension.
+
+Embeddings are populated asynchronously by an offline job after evidence is submitted; the table is deliberately separate from the core milestone tables so the feature can be enabled/disabled without schema churn.
+
+### Database Schema
+
+```sql
+-- Extension (enabled by migration)
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- Table
+CREATE TABLE milestone_embeddings (
+  milestone_id  UUID          PRIMARY KEY,
+  embedding     vector(768)   NOT NULL,
+  created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  updated_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+-- IVFFlat index for approximate nearest-neighbour search
+CREATE INDEX idx_milestone_embeddings_vector
+  ON milestone_embeddings
+  USING ivfflat (embedding vector_cosine_ops)
+  WITH (lists = 100);
+```
+
+### Migration
+
+The migration is applied automatically via Knex:
+
+```bash
+npm run migrate:latest
+```
+
+The migration file is `db/migrations/20260602000000_create_milestone_embeddings.cjs`.
+
+To roll back:
+
+```bash
+npm run migrate:rollback
+```
+
+Rolling back drops the `milestone_embeddings` table but intentionally **leaves the `vector` extension** in place, as other tables may depend on it.
+
+### Repository API — `MilestoneRepository`
+
+Located at `src/repositories/milestoneRepository.ts`.
+
+| Method | Signature | Description |
+|---|---|---|
+| `upsertEmbedding` | `(milestoneId: string, embedding: number[]) => Promise<void>` | Insert or replace the embedding for a milestone. |
+| `nearestNeighbors` | `(milestoneId: string, k?: number) => Promise<NearestNeighborResult[]>` | Return up to `k` nearest neighbours (default 5) by ascending cosine distance, excluding the queried milestone itself. |
+| `findEmbedding` | `(milestoneId: string) => Promise<MilestoneEmbedding \| null>` | Retrieve the stored embedding record, or `null` if absent. |
+| `deleteEmbedding` | `(milestoneId: string) => Promise<void>` | Remove the embedding (e.g. when the milestone is deleted). |
+
+#### Example
+
+```typescript
+import knex from 'knex'
+import { MilestoneRepository } from './src/repositories/milestoneRepository.js'
+
+const db = knex({ client: 'pg', connection: process.env.DATABASE_URL })
+const repo = new MilestoneRepository(db)
+
+// Store an embedding produced by an offline embedding model
+await repo.upsertEmbedding('milestone-uuid', embeddingVector)
+
+// Find the 5 most similar milestones
+const neighbours = await repo.nearestNeighbors('milestone-uuid', 5)
+// => [{ milestone_id: '...', distance: 0.04 }, ...]
+```
+
+### `NearestNeighborResult` type
+
+```typescript
+interface NearestNeighborResult {
+  milestone_id: string
+  distance: number  // cosine distance in [0, 2]; lower = more similar
+}
+```
+
+### Environment Requirements
+
+| Requirement | Notes |
+|---|---|
+| PostgreSQL ≥ 13 | Minimum supported version for pgvector |
+| pgvector ≥ 0.5.0 | `CREATE EXTENSION vector` must succeed |
+| `DATABASE_URL` env var | Standard connection string |
+
+If pgvector is not installed on the target database, the migration will fail with:
+
+```
+ERROR: extension "vector" is not available
+```
+
+Install pgvector on your PostgreSQL server before running migrations:
+
+```bash
+# Debian / Ubuntu
+sudo apt-get install postgresql-16-pgvector
+
+# Docker — use pgvector/pgvector image
+# docker run -e POSTGRES_PASSWORD=pw pgvector/pgvector:pg16
+```
+
+### Tests
+
+Tests live in `src/tests/milestoneEmbeddings.test.ts`. They are automatically **skipped** when `DATABASE_URL` is not set or the `vector` extension is not available in the target database, so they never block CI builds that run without a full PostgreSQL service.
+
+To run the full suite against a local database:
+
+```bash
+DATABASE_URL=postgres://user:pw@localhost:5432/disciplr_test npm test -- milestoneEmbeddings
+```

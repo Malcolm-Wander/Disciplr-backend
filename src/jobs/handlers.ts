@@ -17,13 +17,12 @@ const logJob = (type: JobType, message: string): void => {
   console.log(`[jobs:${type}] ${message}`)
 }
 
-export const defaultJobHandlers: JobHandlerRegistry = {
+export const createDefaultJobHandlers = (
+  notificationService: NotificationService,
+): JobHandlerRegistry => ({
   'notification.send': async (payload, context) => {
-    await NotificationService.send(payload.recipient, payload.subject, payload.body)
-    logJob(
-      'notification.send',
-      `executed job_id=${context.jobId} attempt=${context.attempt}`,
-    )
+    await notificationService.send(payload.recipient, payload.subject, payload.body)
+    logJob('notification.send', `executed job_id=${context.jobId} attempt=${context.attempt}`)
   },
   'deadline.check': async (payload, context) => {
     await sleep(30)
@@ -66,4 +65,4 @@ export const defaultJobHandlers: JobHandlerRegistry = {
       `exportJobId=${payload.exportJobId} attempt=${context.attempt}`,
     )
   },
-}
+})

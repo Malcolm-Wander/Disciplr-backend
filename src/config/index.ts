@@ -2,10 +2,12 @@ import { validateEnv, type Env, type EnvWarning } from './env.js'
 
 export type AppConfig = {
   env: string
+  nodeEnv: string
   port: number
   serviceName: string
   corsOrigins: string[] | '*'
   maxJsonBodySize: string
+  logLevel: 'debug' | 'info' | 'warn' | 'error'
 }
 
 /**
@@ -95,6 +97,7 @@ const _env = process.env.NODE_ENV ?? 'development'
 
 export const config: AppConfig = {
   env: _env,
+  nodeEnv: _validated?.NODE_ENV ?? _env,
   port: _validated?.PORT ?? (process.env.PORT ? Number(process.env.PORT) : 3000),
   serviceName: _validated?.SERVICE_NAME ?? process.env.SERVICE_NAME ?? 'disciplr-backend',
   corsOrigins: parseCorsOrigins(
@@ -102,4 +105,5 @@ export const config: AppConfig = {
     _env,
   ),
   maxJsonBodySize: _validated?.MAX_JSON_BODY_SIZE ?? process.env.MAX_JSON_BODY_SIZE ?? '500kb',
+  logLevel: _validated?.LOG_LEVEL ?? (process.env.LOG_LEVEL as any) ?? 'info',
 }

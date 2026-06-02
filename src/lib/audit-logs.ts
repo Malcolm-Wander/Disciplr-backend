@@ -1,4 +1,5 @@
 import { db } from '../db/knex.js'
+import type { Knex } from 'knex'
 
 export type AuditLogMetadata = Record<string, unknown>
 

@@ -5,7 +5,7 @@ The application uses an abstraction for notification delivery, allowing for mult
 ## Architecture
 
 1.  **Job Enqueueing**: Notifications are enqueued as `notification.send` jobs.
-2.  **Job Execution**: The job handler uses `NotificationService` to select and execute the configured provider.
+2.  **Job Execution**: The job handler uses an injected `NotificationService` instance to select and execute the configured provider.
 3.  **Retries**: Jobs are automatically retried with exponential backoff on failure.
 
 ## Provider Interface
@@ -21,10 +21,17 @@ export interface NotificationProvider {
 
 ## Configuration
 
-The active provider is selected via the `NOTIFICATION_PROVIDER` environment variable.
+The active provider is selected at boot via the validated `NOTIFICATION_PROVIDER` environment variable and injected through `src/index.ts` -> `src/app-bootstrap.ts` -> `BackgroundJobSystem`.
 Available providers:
 - `email`: Sends via Email (Stub implementation).
 - `console`: Logs to console (Default for local development).
+
+### Fail-fast behavior
+
+- `NotificationService` is initialized with a provider registry and a default provider name.
+- If the configured provider name is unknown, startup fails with an explicit error.
+- If a runtime override requests an unknown provider, the send operation throws immediately.
+- Silent fallback to `console` for unknown provider names is intentionally removed to avoid masking misconfiguration.
 
 ## Observability
 

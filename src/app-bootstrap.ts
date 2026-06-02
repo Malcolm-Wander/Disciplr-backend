@@ -29,8 +29,16 @@ import {
 } from './security/abuse-monitor.js'
 import inFlightMiddleware from './middleware/inFlightRequests.js'
 
-export function bootstrapApp() {
-  const jobSystem = new BackgroundJobSystem()
+type BootstrapOptions = {
+  notificationService?: NotificationService
+  notificationProviderName?: string
+}
+
+export function bootstrapApp(options: BootstrapOptions = {}) {
+  const notificationService =
+    options.notificationService ??
+    createNotificationService(options.notificationProviderName ?? process.env.NOTIFICATION_PROVIDER ?? 'console')
+  const jobSystem = new BackgroundJobSystem(notificationService)
   configureExportJobRepository(createKnexExportJobRepository(db))
 
   app.use(securityMetricsMiddleware)

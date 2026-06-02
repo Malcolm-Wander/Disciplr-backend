@@ -1,6 +1,31 @@
 import { jest } from '@jest/globals'
 import { Request, Response, NextFunction } from 'express'
 import { privacyLogger, redact, maskIp, shouldRedact } from '../middleware/privacy-logger.js'
+import * as loggerModule from '../middleware/logger.js'
+
+// Mock the logger module
+jest.mock('../middleware/logger.js', () => ({
+    logger: {
+        debug: jest.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+        child: jest.fn(function(this: any) {
+            return this
+        }),
+    },
+    withCorrelationId: jest.fn((log, cid) => ({
+        ...log,
+        child: jest.fn(function() {
+            return this
+        }),
+        debug: jest.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+    })),
+    getOrGenerateCorrelationId: jest.fn((req) => req.headers['x-correlation-id'] || 'default-cid'),
+}))
 
 describe('Privacy Logger', () => {
     describe('Redaction Engine', () => {
@@ -125,47 +150,97 @@ describe('Privacy Logger', () => {
         })
     })
 
-    describe('Express Middleware integration', () => {
+    describe('Express Middleware integration with Pino', () => {
         let req: Partial<Request>
         let res: Partial<Response>
         let next: NextFunction
+        let mockLogger: any
 
         beforeEach(() => {
+            jest.clearAllMocks()
+
+            mockLogger = {
+                debug: jest.fn(),
+                info: jest.fn(),
+                warn: jest.fn(),
+                error: jest.fn(),
+            }
+
             req = {
                 ip: '192.168.0.1',
                 method: 'POST',
                 url: '/api/test',
                 body: { email: 'user@example.com', name: 'Bob' },
-                headers: { authorization: 'Bearer 1234', 'user-agent': 'jest' },
+                headers: { 
+                    authorization: 'Bearer 1234', 
+                    'user-agent': 'jest',
+                    'x-correlation-id': 'test-corr-id'
+                },
                 socket: {} as any
             }
             res = {}
             next = jest.fn()
-            jest.spyOn(console, 'log').mockImplementation(() => {})
+
+            // Mock withCorrelationId to return our mock logger
+            ;(loggerModule.withCorrelationId as jest.Mock).mockReturnValue(mockLogger)
         })
 
         afterEach(() => {
             jest.restoreAllMocks()
         })
 
-        it('should redact body and headers before logging and call next()', () => {
+        it('should call privacyLogger and invoke next', () => {
             privacyLogger(req as Request, res as Response, next)
             expect(next).toHaveBeenCalled()
-            
-            // Cannot easily capture the strictly formatted console log without spying
-            const logCalls = (console.log as jest.Mock).mock.calls
-            expect(logCalls.length).toBe(1)
-            const logMsg = logCalls[0][0]
-            
-            expect(logMsg).toContain('192.168.x.x')
-            expect(logMsg).not.toContain('user@example.com')
-            expect(logMsg).toContain('***REDACTED***')
-            expect(logMsg).not.toContain('Bearer 1234')
-            expect(logMsg).toContain('Bob')
-            expect(logMsg).toContain('jest')
         })
-        
-        it('should ensure regression against PII leakage in logs', () => {
+
+        it('should emit structured JSON log event through pino', () => {
+            privacyLogger(req as Request, res as Response, next)
+            
+            expect(mockLogger.debug).toHaveBeenCalled()
+            const callArgs = mockLogger.debug.mock.calls[0]
+            
+            // First argument should be the structured log object
+            const logObject = callArgs[0]
+            expect(logObject.event).toBe('privacy.request_logged')
+            expect(logObject.ip.original).toBe('192.168.0.1')
+            expect(logObject.ip.masked).toBe('192.168.x.x')
+            expect(logObject.request.method).toBe('POST')
+            expect(logObject.request.url).toBe('/api/test')
+        })
+
+        it('should redact sensitive fields in structured log output', () => {
+            privacyLogger(req as Request, res as Response, next)
+            
+            const logObject = mockLogger.debug.mock.calls[0][0]
+            
+            // Body should have redacted email
+            expect(logObject.request.body.email).toBe('***REDACTED***')
+            expect(logObject.request.body.name).toBe('Bob')
+            
+            // Headers should have redacted authorization
+            expect(logObject.request.headers.authorization).toBe('***REDACTED***')
+            expect(logObject.request.headers['user-agent']).toBe('jest')
+        })
+
+        it('should emit human-readable message as second argument', () => {
+            privacyLogger(req as Request, res as Response, next)
+            
+            const callArgs = mockLogger.debug.mock.calls[0]
+            const message = callArgs[1]
+            
+            expect(message).toContain('Privacy-logged')
+            expect(message).toContain('POST')
+            expect(message).toContain('/api/test')
+        })
+
+        it('should handle correlation IDs from request headers', () => {
+            privacyLogger(req as Request, res as Response, next)
+            
+            expect(loggerModule.getOrGenerateCorrelationId).toHaveBeenCalledWith(req)
+        })
+
+        it('should ensure regression against PII leakage in structured logs', () => {
             req.body = { 
                 apiKey: 'super_secret_key_123', 
                 nested: { token: 'hidden_token', user_email: 'safe@test.com' } 
@@ -174,14 +249,76 @@ describe('Privacy Logger', () => {
             
             privacyLogger(req as Request, res as Response, next)
             
-            const logCalls = (console.log as jest.Mock).mock.calls
-            const logMsg = logCalls[0][0]
+            const logObject = mockLogger.debug.mock.calls[0][0]
+            const logString = JSON.stringify(logObject)
             
             // Regression test: absolutely no sensitive strings should be present
-            expect(logMsg).not.toMatch(/super_secret_key_123/)
-            expect(logMsg).not.toMatch(/hidden_token/)
-            expect(logMsg).not.toMatch(/header_secret_key/)
-            expect(logMsg).toContain('***REDACTED***')
+            expect(logString).not.toMatch(/super_secret_key_123/)
+            expect(logString).not.toMatch(/hidden_token/)
+            expect(logString).not.toMatch(/header_secret_key/)
+            expect(logString).toContain('***REDACTED***')
+        })
+
+        it('should attach correlation ID and logger to request for downstream handlers', () => {
+            privacyLogger(req as Request, res as Response, next)
+            
+            expect((req as any).correlationId).toBe('test-corr-id')
+            expect((req as any).logger).toBeDefined()
+        })
+    })
+
+    describe('Structured JSON output format', () => {
+        let req: Partial<Request>
+        let res: Partial<Response>
+        let next: NextFunction
+        let mockLogger: any
+
+        beforeEach(() => {
+            jest.clearAllMocks()
+
+            mockLogger = {
+                debug: jest.fn(),
+                info: jest.fn(),
+                warn: jest.fn(),
+                error: jest.fn(),
+            }
+
+            req = {
+                ip: '10.0.0.5',
+                method: 'DELETE',
+                url: '/api/vaults/123',
+                body: {},
+                headers: { 'user-id': '456' },
+                socket: {} as any
+            }
+            res = {}
+            next = jest.fn()
+
+            ;(loggerModule.withCorrelationId as jest.Mock).mockReturnValue(mockLogger)
+        })
+
+        it('should emit complete and valid JSON structure', () => {
+            privacyLogger(req as Request, res as Response, next)
+            
+            const logObject = mockLogger.debug.mock.calls[0][0]
+            
+            // Verify all required fields are present
+            expect(logObject).toHaveProperty('event')
+            expect(logObject).toHaveProperty('ip')
+            expect(logObject).toHaveProperty('request')
+            expect(logObject).toHaveProperty('timestamp')
+            
+            // Verify nested structures
+            expect(logObject.ip).toHaveProperty('original')
+            expect(logObject.ip).toHaveProperty('masked')
+            expect(logObject.request).toHaveProperty('method')
+            expect(logObject.request).toHaveProperty('url')
+            expect(logObject.request).toHaveProperty('headers')
+            expect(logObject.request).toHaveProperty('body')
+            
+            // Verify JSON serializability
+            expect(() => JSON.stringify(logObject)).not.toThrow()
         })
     })
 })
+

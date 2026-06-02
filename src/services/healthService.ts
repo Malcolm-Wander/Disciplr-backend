@@ -44,11 +44,12 @@ export const healthService = {
   },
 
   async buildDeepHealthStatus(jobSystem: BackgroundJobSystem) {
-    const [dbResult, migrationResult, jobResult, horizonResult] = await Promise.allSettled([
+    const [dbResult, migrationResult, jobResult, horizonResult, schedulerResult] = await Promise.allSettled([
       this.checkDatabase(),
       this.checkMigrations(),
       Promise.resolve(this.checkJobSystem(jobSystem)),
       this.checkHorizonListener(),
+      this.checkExpirationScheduler(),
     ]);
 
     const database =
@@ -71,9 +72,14 @@ export const healthService = {
         ? horizonResult.value
         : { status: 'down', error: String(horizonResult.reason?.message ?? 'Unknown error') };
 
+    const expirationScheduler =
+      schedulerResult.status === 'fulfilled'
+        ? schedulerResult.value
+        : { status: 'down', error: String(schedulerResult.reason?.message ?? 'Unknown error') };
+
     const sorobanBoot = this.checkSorobanBoot();
 
-    const components = [database, migrations, jobs, horizonListener];
+    const components = [database, migrations, jobs, horizonListener, expirationScheduler];
     const isDown = components.some((c: any) => c.status === 'down');
     const isDegraded = components.some((c: any) => c.status === 'stale');
 
@@ -86,6 +92,7 @@ export const healthService = {
         migrations,
         jobs,
         horizonListener,
+        expirationScheduler,
         sorobanBoot,
       },
     };
@@ -205,6 +212,60 @@ export const healthService = {
       };
     } catch (error: any) {
       return { status: 'down', error: error.message };
+    }
+  },
+
+  async checkExpirationScheduler(timeoutMs = DEFAULT_TIMEOUT_MS): Promise<{
+    status: string
+    lastRunAt?: string
+    timeSinceLastRunMs?: number
+    error?: string
+  }> {
+    const DEGRADED_THRESHOLD_MS = Number(process.env.SCHEDULER_DEGRADED_THRESHOLD_MS ?? 3 * 60 * 1000)
+    const DOWN_THRESHOLD_MS = Number(process.env.SCHEDULER_DOWN_THRESHOLD_MS ?? 10 * 60 * 1000)
+
+    try {
+      const state = await withTimeout(
+        db('scheduler_heartbeats')
+          .where({ name: 'expiration_scheduler' })
+          .select('last_run_at')
+          .first() as Promise<{ last_run_at: string | Date } | undefined>,
+        timeoutMs,
+        'Expiration scheduler check'
+      )
+
+      if (!state || !state.last_run_at) {
+        return { status: 'down', error: 'No heartbeat recorded in scheduler_heartbeats' }
+      }
+
+      const lastRunAt = new Date(state.last_run_at)
+      const timeSinceLastRunMs = Date.now() - lastRunAt.getTime()
+
+      if (timeSinceLastRunMs > DOWN_THRESHOLD_MS) {
+        return {
+          status: 'down',
+          lastRunAt: lastRunAt.toISOString(),
+          timeSinceLastRunMs,
+          error: 'Scheduler appears to be down (no run for over 10 minutes)',
+        }
+      }
+
+      if (timeSinceLastRunMs > DEGRADED_THRESHOLD_MS) {
+        return {
+          status: 'stale',
+          lastRunAt: lastRunAt.toISOString(),
+          timeSinceLastRunMs,
+          error: 'Heartbeat is stale',
+        }
+      }
+
+      return {
+        status: 'up',
+        lastRunAt: lastRunAt.toISOString(),
+        timeSinceLastRunMs,
+      }
+    } catch (error: any) {
+      return { status: 'down', error: error.message }
     }
   },
 

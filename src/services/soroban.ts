@@ -320,6 +320,60 @@ export const resetSorobanClient = (): void => {
   _client = defaultSorobanClient
 }
 
+/**
+ * Builds the on-chain payload for staking into a vault.
+ * Mirrors the same idempotent pattern as `buildVaultCreationPayload`:
+ * repeated calls with the same input produce identical payloads.
+ *
+ * Feature-flagged: real submission only occurs when Soroban env vars
+ * are fully configured.
+ */
+export const buildVaultStakePayload = async (
+  input: StakeInput,
+): Promise<StakeResponse> => {
+  const mode = input.onChain?.mode ?? 'build'
+  const payload = buildStakePayload(input)
+
+  if (mode !== 'submit') {
+    return {
+      mode,
+      payload,
+      submission: { attempted: false, status: 'not_requested' },
+    }
+  }
+
+  const config = getSorobanConfig()
+  if (!config) {
+    log('warn', 'soroban.submit_not_configured', { vaultId: input.vaultId })
+    return {
+      mode,
+      payload,
+      submission: { attempted: true, status: 'not_configured' },
+    }
+  }
+
+  try {
+    log('info', 'soroban.submit_start', { vaultId: input.vaultId })
+    const { txHash } = await _client.submitStake(config, payload.args)
+    log('info', 'soroban.submit_success', { vaultId: input.vaultId, txHash })
+
+    return {
+      mode,
+      payload,
+      submission: { attempted: true, status: 'success', txHash },
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown submission error'
+    log('error', 'soroban.submit_error', { vaultId: input.vaultId, error: message })
+
+    return {
+      mode,
+      payload,
+      submission: { attempted: true, status: 'error', error: message },
+    }
+  }
+}
+
 // ─── Structured logging helper (no PII) ─────────────────────────────────────
 
 const log = (level: 'info' | 'warn' | 'error', event: string, data: Record<string, unknown> = {}): void => {

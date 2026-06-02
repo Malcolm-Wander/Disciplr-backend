@@ -16,5 +16,10 @@ export const createHealthRouter = (jobSystem: BackgroundJobSystem): Router => {
     return res.status(200).json(healthService.buildHealthStatus('disciplr-api', jobSystem))
   })
 
+  router.get('/deep', async (req, res) => {
+    const deepStatus = await healthService.buildDeepHealthStatus(jobSystem)
+    return res.status(deepStatus.status === 'error' ? 503 : 200).json(deepStatus)
+  })
+
   return router
 }

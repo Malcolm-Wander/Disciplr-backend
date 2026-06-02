@@ -395,6 +395,64 @@ export class InMemoryJobQueue {
     return this.enqueue(entry.type, entry.payload, { maxAttempts: entry.maxAttempts })
   }
 
+  retryJob(jobId: string, force: boolean = false): QueuedJobReceipt<JobType> {
+    const deadLetterIndex = this.deadLetterJobs.findIndex((entry) => entry.jobId === jobId)
+    if (deadLetterIndex !== -1) {
+      const entry = this.deadLetterJobs[deadLetterIndex]
+      if (!force) {
+        throw new Error('max_attempts is exhausted. Use ?force=true to retry anyway.')
+      }
+
+      this.deadLetterJobs.splice(deadLetterIndex, 1)
+
+      const job: InternalQueuedJob<JobType> = {
+        id: entry.jobId,
+        type: entry.type,
+        payload: entry.payload,
+        attempt: 0,
+        maxAttempts: entry.maxAttempts,
+        createdAt: entry.createdAt,
+        runAt: Date.now(),
+      }
+
+      this.pendingJobs.push(job)
+      this.sortPendingJobs()
+
+      if (this.running) {
+        void this.drain()
+      }
+
+      return {
+        id: job.id,
+        type: job.type,
+        runAt: new Date(job.runAt).toISOString(),
+        maxAttempts: job.maxAttempts,
+      }
+    }
+
+    const pendingIndex = this.pendingJobs.findIndex((job) => job.id === jobId)
+    if (pendingIndex !== -1) {
+      const job = this.pendingJobs[pendingIndex]
+      if (job.attempt > 0) {
+        job.runAt = Date.now()
+        this.sortPendingJobs()
+        
+        if (this.running) {
+          void this.drain()
+        }
+
+        return {
+          id: job.id,
+          type: job.type,
+          runAt: new Date(job.runAt).toISOString(),
+          maxAttempts: job.maxAttempts,
+        }
+      }
+    }
+
+    throw new Error('Job not found or not in a failed state')
+  }
+
   private trimHistory(records: unknown[]): void {
     if (records.length > this.historyLimit) {
       records.length = this.historyLimit

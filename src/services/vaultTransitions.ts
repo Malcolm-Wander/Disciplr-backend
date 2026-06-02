@@ -9,7 +9,7 @@ export interface TransitionResult {
   error?: string;
 }
 
-const ALLOWED_TRANSITIONS: Record<string, string[]> = {
+export const ALLOWED_TRANSITIONS: Record<string, string[]> = {
   draft: ['active', 'cancelled'],
   active: ['completed', 'failed', 'cancelled', 'disputed'],
   disputed: ['active', 'completed', 'failed'],
@@ -17,6 +17,12 @@ const ALLOWED_TRANSITIONS: Record<string, string[]> = {
   failed: [],
   cancelled: [],
 };
+
+// Utility function for exhaustive type checking
+function assertNever(x: never): never {
+  throw new Error(`Unexpected value: ${x}`);
+}
+
 
 const TERMINAL_STATUSES: ReadonlySet<string> = new Set(['completed', 'failed', 'cancelled']);
 
@@ -64,8 +70,9 @@ export const getTransitionError = (
       }
       return null;
     default:
-      return `Unknown target status: ${targetStatus}`;
-  }
+      // Ensure exhaustive handling of TerminalStatus
+      return assertNever(targetStatus as never);
+    };
 };
 
 export const completeVault = (vaultId: string): TransitionResult => {

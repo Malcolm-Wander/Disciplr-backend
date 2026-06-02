@@ -4,6 +4,8 @@
 
 The Disciplr backend enforces Role-Based Access Control (RBAC) across all protected endpoints. This document describes the role definitions, enforcement model, and trust hierarchy.
 
+User role and `lastLoginAt` state are persisted in the `users` table and read through Prisma-backed queries. The auth router does not maintain any in-process mock user cache, so role changes survive process restarts and future logins.
+
 ## Registration
 
 Endpoint: `POST /api/auth/register`
@@ -40,6 +42,8 @@ Endpoint: `POST /api/auth/register`
 - Passwords are hashed using `bcryptjs` with a cost factor of 12.
 - Email existence is not leaked during login (generic "Invalid credentials" error).
 - Password hashes are never returned in registration or login responses.
+- Role changes are persisted to the database and later read from the same `users` row.
+- Audit log metadata excludes email addresses and other request-body PII.
 
 ## Role Definitions
 
@@ -113,6 +117,13 @@ The enforcement model follows a **token-driven trust hierarchy**:
 3. **Role Assignment:** After verification, the token payload is extracted and `req.user.role` is set by the `authenticate` middleware.
 4. **Authorization Check:** The `authorize()` or `enforceRBAC()` middleware reads **exclusively** from `req.user.role`.
 5. **Deny by Default:** If `req.user.role` is not in the whitelist for a protected route, the request is rejected with `403 Forbidden`.
+
+### Persisted User State
+
+- The source of truth for user role and `lastLoginAt` is the `users` table.
+- `AuthService.login()` updates `lastLoginAt` as part of the login write path.
+- Legacy `POST /api/auth/login` requests that provide only `userId` read the persisted user row instead of fabricating in-memory role state.
+- Administrative role updates write through to the database, so subsequent requests and restarts observe the same role.
 
 ### Request Headers: Untrusted
 
@@ -354,3 +365,7 @@ Tests specifically validate that the following bypass attempts fail:
 ### Property-Based Testing
 
 The test suite includes property-based tests with minimum 100 iterations per property to validate universal security properties across all valid inputs, providing comprehensive coverage beyond unit tests.
+
+
+## Middleware Consolidation
+`auth.middleware.ts` and `userAuth.ts` have been consolidated into `auth.ts`. Please import `authenticate` and `authorize` strictly from `src/middleware/auth.js`. `requireUserAuth` is deprecated and will be removed in #454.
