@@ -1,5 +1,7 @@
 import { Router, type Request, type Response } from 'express'
 import { authenticate } from '../middleware/auth.middleware.js'
+import { requireScopes } from '../middleware/apiKeyAuth.js'
+import { ApiScope } from '../types/auth.js'
 import { UserRole } from '../types/user.js'
 import { VaultService } from '../services/vault.service.js'
 import { applyFilters, applySort, paginateArray } from '../utils/pagination.js'
@@ -41,6 +43,7 @@ export interface Vault {
 vaultsRouter.get(
   '/',
   authenticate,
+  requireScopes(ApiScope.ReadVaults),
   queryParser({
     allowedSortFields: ['createdAt', 'amount', 'endTimestamp', 'status'],
     allowedFilterFields: ['status', 'creator'],
@@ -123,7 +126,7 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response) => {
 // ─── GET /api/vaults/:id ─────────────────────────────────────────────────────
 
 // GET /api/vaults/:id
-vaultsRouter.get('/:id', authenticate, async (req: Request, res: Response) => {
+vaultsRouter.get('/:id', authenticate, requireScopes(ApiScope.ReadVaults), async (req: Request, res: Response) => {
   // Try DB-backed store first (falls back to in-memory automatically)
   try {
     const vault = await getVaultById(req.params.id)
@@ -196,7 +199,7 @@ vaultsRouter.post('/:id/cancel', authenticate, async (req, res) => {
 })
 
 // GET /api/vaults/user/:address 
-vaultsRouter.get('/user/:address', authenticate, async (req: Request, res: Response) => {
+vaultsRouter.get('/user/:address', authenticate, requireScopes(ApiScope.ReadVaults), async (req: Request, res: Response) => {
   try {
     const userVaults = await VaultService.getVaultsByUser(req.params.address)
     res.json(userVaults)

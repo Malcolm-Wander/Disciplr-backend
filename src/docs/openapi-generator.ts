@@ -20,17 +20,22 @@ registry.registerComponent('securitySchemes', 'bearerAuth', {
 })
 
 // --- Shared Schemas ---
-const ErrorSchema = registry.register(
-  'Error',
-  z.object({
-    error: z.object({
-      code: z.string().openapi({ example: 'VALIDATION_ERROR' }),
-      message: z.string().openapi({ example: 'Invalid request parameters' }),
-      details: z.unknown().optional(),
-      requestId: z.string().optional().openapi({ example: 'req_123' }),
-    }),
-  })
-)
+const PaginationCursor = registry.registerComponent('schemas', 'PaginationCursor', z.object({
+  limit: z.number(),
+  cursor: z.string().optional(),
+  next_cursor: z.string().optional(),
+  has_more: z.boolean(),
+  count: z.number(),
+}))
+
+const ErrorEnvelope = registry.registerComponent('schemas', 'ErrorEnvelope', z.object({
+  error: z.object({
+    code: z.string().openapi({ example: 'VALIDATION_ERROR' }),
+    message: z.string().openapi({ example: 'Invalid request parameters' }),
+    details: z.unknown().optional(),
+    requestId: z.string().optional().openapi({ example: 'req_123' }),
+  }),
+}))
 
 const VaultSchema = registry.register(
   'Vault',
@@ -102,7 +107,7 @@ registry.registerPath({
       description: 'User registered successfully',
       content: { 'application/json': { schema: z.any() } },
     },
-    400: { description: 'Bad request', content: { 'application/json': { schema: ErrorSchema } } },
+    400: { description: 'Bad request', content: { 'application/json': { schema: registry.getComponentRef('ErrorEnvelope') } } },
   },
 })
 
@@ -123,7 +128,7 @@ registry.registerPath({
       description: 'Login successful',
       content: { 'application/json': { schema: z.any() } },
     },
-    401: { description: 'Unauthorized', content: { 'application/json': { schema: ErrorSchema } } },
+    401: { description: 'Unauthorized', content: { 'application/json': { schema: registry.getComponentRef('ErrorEnvelope') } } },
   },
 })
 
@@ -378,13 +383,7 @@ registry.registerPath({
         'application/json': {
           schema: z.object({
             data: z.array(z.any()),
-            pagination: z.object({
-              limit: z.number(),
-              cursor: z.string().optional(),
-              next_cursor: z.string().optional(),
-              has_more: z.boolean(),
-              count: z.number(),
-            }),
+            pagination: registry.getComponentRef('PaginationCursor'),
           }),
         },
       },

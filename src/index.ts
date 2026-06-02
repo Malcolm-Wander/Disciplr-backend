@@ -4,6 +4,8 @@ import { initEnv } from './config/index.js'
 // This ensures the process exits immediately on misconfiguration.
 initEnv()
 
+import { ensureSorobanBootPrecheck } from './services/sorobanBoot.js'
+
 import { app } from './app.js'
 import { bootstrapApp } from './app-bootstrap.js'
 import { startExpirationChecker } from './services/expirationScheduler.js'
@@ -40,6 +42,7 @@ const server = app.listen(PORT, () => {
   if (process.env.ENABLE_ETL_WORKER !== 'false') {
     etlWorker.start(ETL_INTERVAL_MINUTES)
   }
+  void ensureSorobanBootPrecheck()
 })
 
 const shutdownHandler = createShutdownHandler({

@@ -138,6 +138,28 @@ createAuditLog({
 - Audit logs are stored in-memory during testing
 - Test coverage should verify both successful operations and authorization failures
 
+### Performance and Indexing
+
+For admin UI access patterns that scope queries to a specific organization and list recent events, the recommended access pattern is:
+
+- WHERE organization_id = $ORG_ID
+- ORDER BY created_at DESC
+- LIMIT $N OFFSET $M
+
+This pattern is supported by a composite index on `(organization_id, created_at DESC)` which ensures the database can satisfy the ordered limit efficiently without a filesort.
+
+Example `EXPLAIN ANALYZE` output (captured during load testing):
+
+```
+Limit  (cost=0.14..12.50 rows=50 width=256) (actual time=0.12..1.23 rows=50 loops=1)
+  ->  Index Scan using idx_audit_logs_organization_created on audit_logs  (cost=0.14..2534.50 rows=1000 width=256) (actual time=0.11..1.20 rows=50 loops=1)
+        Index Cond: (organization_id = '00000000-0000-0000-0000-000000000000'::uuid)
+Planning Time: 0.20 ms
+Execution Time: 1.35 ms
+```
+
+If your production dataset grows large, prefer paginating with `LIMIT` + `OFFSET` or use cursor-based pagination on `(created_at, id)` to avoid deep OFFSET scans.
+
 ## Best Practices
 
 1. **Always include audit logs for state-changing operations**

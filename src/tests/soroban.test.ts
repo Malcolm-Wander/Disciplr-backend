@@ -654,6 +654,109 @@ describe('soroban service', () => {
     })
   })
 
+  // ─── Dual-token SEP-41 coverage ──────────────────────────────────
+  //
+  // SEP-41 (Stellar Token Interface) can be implemented by both the
+  // built-in Stellar Asset Contract (SAC) and by user-deployed Wasm
+  // token contracts.  At the service layer both are just Stellar
+  // addresses, but the vault creation payload must correctly
+  // propagate the chosen token address so the contract knows which
+  // SEP-41 implementation to use.
+  //
+  // These tests verify that:
+  //   1. a token address supplied via `onChain.token` appears in args
+  //   2. omitting `token` leaves it undefined (contract defaults to SAC)
+  //   3. different token values produce distinct payloads
+  //   4. the token parameter flows through to the client in submit mode
+
+  const SAC_TOKEN = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4'   // Stellar Asset Contract
+  const WASM_TOKEN = 'CCB3C5WYKQCNSOI6U25HNPJ2C2P3EPVN6M3H6XHGM5HRFT5U26FLG3XH' // Generic SEP-41 Wasm token
+
+  describe('dual-token SEP-41 coverage', () => {
+    // ── build mode ──────────────────────────────────────────────
+
+    it('includes token in payload args when specified in build mode', async () => {
+      const input = makeInput({ onChain: { token: WASM_TOKEN } })
+      const vault = makeVault()
+      const result = await buildVaultCreationPayload(input, vault)
+
+      expect(result.payload.args.token).toBe(WASM_TOKEN)
+    })
+
+    it('includes token as undefined when not specified in build mode', async () => {
+      const input = makeInput()
+      const vault = makeVault()
+      const result = await buildVaultCreationPayload(input, vault)
+
+      expect(result.payload.args.token).toBeUndefined()
+    })
+
+    it('supports SAC token address', async () => {
+      const input = makeInput({ onChain: { token: SAC_TOKEN } })
+      const vault = makeVault()
+      const result = await buildVaultCreationPayload(input, vault)
+
+      expect(result.payload.args.token).toBe(SAC_TOKEN)
+    })
+
+    it('produces different payloads for SAC vs Wasm token', async () => {
+      const vault = makeVault()
+
+      const sacResult = await buildVaultCreationPayload(
+        makeInput({ onChain: { token: SAC_TOKEN } }),
+        vault,
+      )
+      const wasmResult = await buildVaultCreationPayload(
+        makeInput({ onChain: { token: WASM_TOKEN } }),
+        vault,
+      )
+
+      expect(sacResult.payload.args.token).toBe(SAC_TOKEN)
+      expect(wasmResult.payload.args.token).toBe(WASM_TOKEN)
+      expect(sacResult.payload.args.token).not.toEqual(wasmResult.payload.args.token)
+    })
+
+    // ── submit mode ─────────────────────────────────────────────
+
+    it('passes token to client in submit mode when specified', async () => {
+      setEnv(FULL_ENV)
+      const { client, spy } = createMockClient()
+      setSorobanClient(client)
+
+      const input = makeInput({ onChain: { mode: 'submit', token: WASM_TOKEN } })
+      const vault = makeVault()
+      await buildVaultCreationPayload(input, vault)
+
+      const [, passedArgs] = spy.mock.calls[0] as [SorobanConfig, Record<string, unknown>]
+      expect(passedArgs.token).toBe(WASM_TOKEN)
+    })
+
+    it('passes token as undefined to client when not specified in submit mode', async () => {
+      setEnv(FULL_ENV)
+      const { client, spy } = createMockClient()
+      setSorobanClient(client)
+
+      const input = makeInput({ onChain: { mode: 'submit' } })
+      const vault = makeVault()
+      await buildVaultCreationPayload(input, vault)
+
+      const [, passedArgs] = spy.mock.calls[0] as [SorobanConfig, Record<string, unknown>]
+      expect(passedArgs.token).toBeUndefined()
+    })
+
+    it('passed token does not leak into submission response metadata', async () => {
+      setEnv(FULL_ENV)
+      const { client } = createMockClient()
+      setSorobanClient(client)
+
+      const input = makeInput({ onChain: { mode: 'submit', token: WASM_TOKEN } })
+      const result = await buildVaultCreationPayload(input, makeVault())
+
+      const serialized = JSON.stringify(result)
+      expect(serialized).toContain(WASM_TOKEN) // it's in payload.args
+    })
+  })
+
   // ─── Edge cases ────────────────────────────────────────────────
 
   describe('edge cases', () => {

@@ -47,3 +47,42 @@ Database connection closed
 | `JOB_WORKER_CONCURRENCY` | 2 | Number of concurrent job workers. |
 | `JOB_QUEUE_POLL_INTERVAL_MS` | 250 | How often the job queue checks for new work. |
 | `JOB_HISTORY_LIMIT` | 50 | Number of completed/failed jobs to keep in memory metrics. |
+
+## Soroban Testnet Account Funding (Friendbot Precheck)
+
+On Stellar testnet, the `SOROBAN_SOURCE_ACCOUNT` must hold XLM before submitting any transactions. Without an initial balance the first vault creation fails with *account not found*.
+
+### How it works
+
+At startup (after the HTTP server binds), the backend runs a one-time precheck:
+
+1. Reads `SOROBAN_SOURCE_ACCOUNT` and `SOROBAN_RPC_URL` from the environment.
+2. Queries the Horizon endpoint derived from `SOROBAN_RPC_URL` for the account.
+3. **If the account exists** — nothing happens.
+4. **If the account does not exist** — calls [Stellar Friendbot](https://friendbot.stellar.org) to fund it with testnet XLM.
+
+The precheck only runs when **all** of the following are true:
+
+- Soroban submit mode is fully configured (all five `SOROBAN_*` variables are set).
+- `SOROBAN_NETWORK_PASSPHRASE` equals `Test SDF Network ; September 2015`.
+
+On mainnet (or any other passphrase) the precheck is a no-op — Friendbot is never called.
+
+### Result in `/api/health/deep`
+
+The cached result is exposed as `details.sorobanBoot` in the deep health response. It does **not** affect the overall `status` field (informational only).
+
+| `status` | Meaning |
+|---|---|
+| `pending` | Precheck has not completed yet (startup in progress). |
+| `not_applicable` | Soroban not configured or not testnet. |
+| `ok` | Precheck passed. `funded: true` if Friendbot was called. |
+| `error` | Precheck failed (non-fatal); see `error` field for details. |
+
+### Environment variables
+
+| Variable | Required for precheck | Description |
+|---|---|---|
+| `SOROBAN_SOURCE_ACCOUNT` | Yes | Public key (`G…`) of the transaction submitter. |
+| `SOROBAN_NETWORK_PASSPHRASE` | Yes | Must be testnet passphrase to enable Friendbot call. |
+| `SOROBAN_RPC_URL` | Yes | Used to derive the Horizon base URL for the account lookup. |

@@ -23,6 +23,9 @@ export interface CreateVaultInput {
     contractId?: string
     networkPassphrase?: string
     sourceAccount?: string
+    /** SEP-41 token contract address. SAC (Stellar Asset Contract) by default;
+     *  pass a Wasm-based token address to test generic SEP-41 compliance. */
+    token?: string
   }
 }
 

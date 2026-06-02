@@ -24,6 +24,40 @@ The exports pipeline now runs through the background job system using the `expor
 - Download links are signed and time-limited.
 - CSV cells that start with spreadsheet formula prefixes such as `=`, `+`, `-`, `@`, tab, or carriage return are prefixed with `'` to mitigate formula injection.
 
+## Per-tenant export quotas
+
+Each organization (or individual user when no org context is present) is limited to a configurable number of export requests per UTC calendar day.
+
+### How it works
+
+- On every `POST /api/exports/me` and `POST /api/exports/admin` the quota counter for the resolved tenant is checked **before** a job is enqueued.
+- The tenant is identified by `orgId` when it is attached to the request (e.g. via `requireOrgAccess` middleware), falling back to the authenticated `userId`.
+- Quotas reset automatically at UTC midnight (no manual action required).
+- Counters are stored in the `org_quotas` table (in-memory in test environments, Knex/PostgreSQL in production).
+
+### 429 response
+
+When the daily limit is exceeded the API returns:
+
+```
+HTTP 429 Too Many Requests
+Retry-After: <seconds until UTC midnight>
+Content-Type: application/json
+
+{
+  "error": "Export quota exceeded. Try again tomorrow.",
+  "retryAfter": 3600
+}
+```
+
+The `Retry-After` value is the number of seconds remaining until the quota resets at midnight UTC.
+
+### Configuration
+
+| Environment variable       | Default | Description                            |
+| -------------------------- | ------- | -------------------------------------- |
+| `EXPORT_DAILY_QUOTA_LIMIT` | `100`   | Max export requests per tenant per day |
+
 ## CSV behavior
 
 - CSV output uses UTF-8 with BOM for spreadsheet compatibility.

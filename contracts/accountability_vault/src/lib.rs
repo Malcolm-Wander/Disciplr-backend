@@ -49,7 +49,7 @@ pub enum DataKey {
     /// Per-milestone check-in timestamp (set when the milestone reaches the approval threshold).
     CheckIn(u32),
     /// Per-milestone list of addresses that have approved, used for M-of-N tracking.
-    MilestoneApprovals(u32),
+    MilestoneApprovals(u32),\n    DisputeWindow,
 }
 
 /// Lifecycle state of the vault, mirroring the backend `PersistedVault.status`.
@@ -66,6 +66,10 @@ pub enum VaultStatus {
     Failed = 3,
     /// Cancelled by the creator before activation.
     Cancelled = 4,
+    /// Admin hold: entered from Active by the admin (guardian). Blocks
+    /// `slash_on_miss` and `claim` until the admin resolves the dispute
+    /// back to `Active`, or directly to `Completed` or `Failed`.
+    Disputed = 5,
 }
 
 /// Verifier configuration for M-of-N milestone approval.
@@ -143,7 +147,10 @@ pub enum Error {
     NoMilestones = 5,
     NotDraft = 6,
     NotActive = 7,
-    Unauthorized = 8,
+    Unauthorized = 8, // backward compatibility
+    NotCreator = 23,
+    NotVerifier = 24,
+    NotCreatorOrVerifier = 25,
     AlreadyStaked = 9,
     MilestoneIndexOutOfRange = 10,
     MilestoneAlreadyVerified = 11,
@@ -165,6 +172,8 @@ pub enum Error {
     InvalidThreshold = 21,
     /// `reclaim_after_settlement` was called while `staked` is non-zero.
     StakedRemaining = 22,
+    /// Operation rejected because the vault is in `Disputed` state.
+    VaultDisputed = 23,
 }
 
 #[contract]
@@ -410,7 +419,10 @@ impl AccountabilityVault {
             return Err(Error::MilestoneIndexOutOfRange);
         }
 
-        let mut milestone = vault.milestones.get(milestone_index).unwrap();
+        let mut milestone = vault
+            .milestones
+            .get(milestone_index)
+            .ok_or(Error::MilestoneIndexOutOfRange)?;
         if milestone.verified {
             return Err(Error::MilestoneAlreadyVerified);
         }
@@ -527,6 +539,10 @@ impl AccountabilityVault {
     pub fn slash_on_miss(env: Env) -> Result<(), Error> {
         let mut vault: Vault = Self::load(&env)?;
 
+        // Check Disputed before NotActive so callers get the specific error code.
+        if vault.status == VaultStatus::Disputed {
+            return Err(Error::VaultDisputed);
+        }
         if vault.status != VaultStatus::Active {
             return Err(Error::NotActive);
         }
@@ -575,6 +591,10 @@ impl AccountabilityVault {
         caller.require_auth();
         let mut vault: Vault = Self::load(&env, &vault_id)?;
 
+        // Check Disputed before NotActive so callers get the specific error code.
+        if vault.status == VaultStatus::Disputed {
+            return Err(Error::VaultDisputed);
+        }
         if vault.status != VaultStatus::Active {
             return Err(Error::NotActive);
         }
@@ -641,7 +661,10 @@ impl AccountabilityVault {
             return Err(Error::MilestoneIndexOutOfRange);
         }
 
-        let mut milestone = vault.milestones.get(index).unwrap();
+        let mut milestone = vault
+            .milestones
+            .get(index)
+            .ok_or(Error::MilestoneIndexOutOfRange)?;
         if !milestone.verified {
             return Err(Error::MilestonesIncomplete);
         }
@@ -687,30 +710,39 @@ impl AccountabilityVault {
         Ok(())
     }
 
-    /// Cancels an unfunded (`Draft`) vault, or refunds the creator if the vault
-    /// was funded but never activated against any milestone. Only the creator
-    /// may withdraw; vaults with any verified check-ins cannot be unwound.
-    ///
-    /// Checks-Effects-Interactions: vault state is updated and persisted BEFORE
-    /// the external token transfer for the active-vault refund path.
-    pub fn withdraw(env: Env, creator: Address) -> Result<(), Error> {
+    /// Cancels an unfunded (`Draft`) vault. Only the creator may cancel a
+    /// draft; this path does not transfer tokens and emits `vault_cancelled`.
+    pub fn cancel_vault(env: Env, vault_id: String, creator: Address) -> Result<(), Error> {
         creator.require_auth();
         let mut vault: Vault = Self::load(&env, &vault_id)?;
 
         if creator != vault.creator {
             return Err(Error::Unauthorized);
         }
-        if vault.status == VaultStatus::Draft {
-            vault.status = VaultStatus::Cancelled;
-            let key = DataKey::Vault(vault_id);
-            env.storage().persistent().set(&key, &vault);
-            Self::extend_ttl(&env, &key);
-
-            env.events()
-                .publish((String::from_str(&env, "vault_cancelled"), creator), 0i128);
-            return Ok(());
+        if vault.status != VaultStatus::Draft {
+            return Err(Error::NotDraft);
         }
 
+        vault.status = VaultStatus::Cancelled;
+        let key = DataKey::Vault(vault_id);
+        env.storage().persistent().set(&key, &vault);
+        Self::extend_ttl(&env, &key);
+
+        env.events()
+            .publish((String::from_str(&env, "vault_cancelled"), creator), 0i128);
+        Ok(())
+    }
+
+    /// Refunds the creator for an `Active` vault that was never checked-in.
+    /// This function is restricted to `Active` refund cases; callers that wish
+    /// to cancel a Draft should call `cancel_vault` instead.
+    pub fn withdraw(env: Env, vault_id: String, creator: Address) -> Result<(), Error> {
+        creator.require_auth();
+        let mut vault: Vault = Self::load(&env, &vault_id)?;
+
+        if creator != vault.creator {
+            return Err(Error::Unauthorized);
+        }
         if vault.status != VaultStatus::Active {
             return Err(Error::NotActive);
         }
@@ -741,6 +773,71 @@ impl AccountabilityVault {
             (String::from_str(&env, "vault_withdrawn"), creator),
             refunded,
         );
+        Ok(())
+    }
+
+    /// Transitions an `Active` vault into `Disputed`, blocking `slash_on_miss` and
+    /// `claim` until an admin resolves the dispute.
+    ///
+    /// Only the `guardian` address may call this. The vault must be `Active`.
+    pub fn admin_dispute(env: Env, vault_id: String, admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let mut vault: Vault = Self::load(&env, &vault_id)?;
+
+        if admin != vault.guardian {
+            return Err(Error::Unauthorized);
+        }
+        if vault.status != VaultStatus::Active {
+            return Err(Error::NotActive);
+        }
+
+        vault.status = VaultStatus::Disputed;
+        let key = DataKey::Vault(vault_id);
+        env.storage().persistent().set(&key, &vault);
+        Self::extend_ttl(&env, &key);
+
+        env.events()
+            .publish((String::from_str(&env, "vault_disputed"), admin), ());
+        Ok(())
+    }
+
+    /// Resolves a `Disputed` vault to `Active`, `Completed`, or `Failed`.
+    ///
+    /// Only the `guardian` address may call this. `target` must be one of those
+    /// three statuses; any other value is rejected with `Error::NotActive`.
+    ///
+    /// Resolving to `Completed` or `Failed` is a terminal administrative decision
+    /// and does **not** trigger a token transfer — settlement still goes through
+    /// `claim` (for Completed) or `slash_on_miss` (for Failed) once the vault is
+    /// back in the appropriate resolved state.
+    pub fn admin_resolve(
+        env: Env,
+        vault_id: String,
+        admin: Address,
+        target: VaultStatus,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        let mut vault: Vault = Self::load(&env, &vault_id)?;
+
+        if admin != vault.guardian {
+            return Err(Error::Unauthorized);
+        }
+        if vault.status != VaultStatus::Disputed {
+            return Err(Error::VaultDisputed);
+        }
+
+        match target {
+            VaultStatus::Active | VaultStatus::Completed | VaultStatus::Failed => {}
+            _ => return Err(Error::NotActive),
+        }
+
+        vault.status = target;
+        let key = DataKey::Vault(vault_id);
+        env.storage().persistent().set(&key, &vault);
+        Self::extend_ttl(&env, &key);
+
+        env.events()
+            .publish((String::from_str(&env, "vault_dispute_resolved"), admin), target as u32);
         Ok(())
     }
 
@@ -807,7 +904,46 @@ impl AccountabilityVault {
 
     // ── internal helpers ────────────────────────────────────────────────
 
-    fn load(env: &Env, vault_id: &String) -> Result<Vault, Error> {
+
+    pub fn configure_window(env: Env, window: u64) {
+        env.storage().instance().set(&DataKey::DisputeWindow, &window);
+    }
+
+    pub fn dispute_milestone(env: Env, vault_id: String, creator: Address, index: u32) -> Result<(), Error> {
+        creator.require_auth();
+        let mut vault: Vault = Self::load(&env, &vault_id)?;
+
+        if vault.creator != creator {
+            return Err(Error::Unauthorized);
+        }
+        if index >= vault.milestones.len() {
+            return Err(Error::MilestoneIndexOutOfRange);
+        }
+
+        let mut milestone = vault.milestones.get(index).unwrap();
+        if !milestone.verified {
+            return Err(Error::MilestonesIncomplete);
+        }
+
+        let dispute_window: u64 = env.storage().instance().get(&DataKey::DisputeWindow).unwrap_or(86400);
+        let verified_at: u64 = env.storage().instance().get(&DataKey::CheckIn(index)).unwrap_or(0);
+        
+        if env.ledger().timestamp() > verified_at + dispute_window {
+            return Err(Error::DeadlinePassed);
+        }
+
+        milestone.verified = false;
+        vault.milestones.set(index, milestone);
+        
+        // Match upstream's storage format
+        env.storage().instance().set(&DataKey::Vault, &vault);
+
+        let event_name = soroban_sdk::Symbol::new(&env, "milestone_disputed");
+        env.events().publish((event_name, creator), index);
+        
+        Ok(())
+    }
+\n    fn load(env: &Env, vault_id: &String) -> Result<Vault, Error> {
         let key = DataKey::Vault(vault_id.clone());
         let vault = env
             .storage()

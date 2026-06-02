@@ -1,8 +1,8 @@
 import { createRequire } from 'module'
 import knex, { Knex } from 'knex'
 
-const require = createRequire(import.meta.url)
-const config = require('../../knexfile.cjs')
+const nodeRequire = createRequire(import.meta.url)
+const config = nodeRequire('../../knexfile.cjs')
 
 export const db: Knex = knex(config)
 

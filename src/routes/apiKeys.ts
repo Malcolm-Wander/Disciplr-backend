@@ -10,6 +10,7 @@ import {
 } from '../services/apiKeys.js'
 import { formatValidationError } from '../lib/validation.js'
 import { createAuditLog } from '../lib/audit-logs.js'
+import { ApiScope } from '../types/auth.js'
 
 export const apiKeysRouter = Router()
 
@@ -33,6 +34,20 @@ apiKeysRouter.post('/', apiKeyRateLimiter, async (req, res) => {
   const parseResult = createApiKeySchema.safeParse(req.body)
   if (!parseResult.success) {
     res.status(400).json(formatValidationError(parseResult.error))
+
+  // Validate scope names against the typed ApiScope enum
+  const validScopes = new Set(Object.values(ApiScope))
+  const invalidIndex = scopes.findIndex((s: string) => !validScopes.has(s))
+  if (invalidIndex !== -1) {
+    res.status(400).json({
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid request payload',
+        fields: [{ path: `scopes[${invalidIndex}]`, message: 'Invalid scope', code: 'invalid_value' }],
+      },
+    })
+    return
+  }
     return
   }
 

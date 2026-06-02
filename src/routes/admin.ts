@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express'
 import { requireAdmin } from '../middleware/rbac.js'
+import { queryParser } from '../middleware/queryParser.js'
 import { authorize } from '../middleware/auth.middleware.js'
 import { metricsRateLimiter } from '../middleware/rateLimiter.js'
 import { UserRole, UserStatus } from '../types/user.js'
@@ -75,19 +76,27 @@ adminRouter.post('/users/:userId/revoke-sessions', async (req: Request, res: Res
 const getStringQuery = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim() !== '' ? value : undefined
 
-adminRouter.get('/audit-logs', async (req, res) => {
-  try {
-    const limit = getStringQuery(req.query.limit) ? Number(getStringQuery(req.query.limit)) : undefined
-    const offset = getStringQuery(req.query.offset) ? Number(getStringQuery(req.query.offset)) : undefined
-    
-    const logs = await listAuditLogs({
-      actor_user_id: getStringQuery(req.query.actor_user_id),
-      action: getStringQuery(req.query.action),
-      target_type: getStringQuery(req.query.target_type),
-      target_id: getStringQuery(req.query.target_id),
-      limit,
-      offset,
-    })
+adminRouter.get(
+  '/audit-logs',
+  // Validate sorting and filter fields to avoid arbitrary ORDER BY usage
+  queryParser({
+    allowedSortFields: ['created_at'],
+    allowedFilterFields: ['organization_id', 'actor_user_id', 'action', 'target_type', 'target_id'],
+  }),
+  async (req, res) => {
+    try {
+      const limit = getStringQuery(req.query.limit) ? Number(getStringQuery(req.query.limit)) : undefined
+      const offset = getStringQuery(req.query.offset) ? Number(getStringQuery(req.query.offset)) : undefined
+
+      const logs = await listAuditLogs({
+        organization_id: (req.filters as any)?.organization_id,
+        actor_user_id: (req.filters as any)?.actor_user_id,
+        action: (req.filters as any)?.action,
+        target_type: (req.filters as any)?.target_type,
+        target_id: (req.filters as any)?.target_id,
+        limit,
+        offset,
+      })
 
     // Get total count for pagination metadata
     let countQuery = db('audit_logs').count('* as total')
@@ -103,6 +112,10 @@ adminRouter.get('/audit-logs', async (req, res) => {
     }
     if (req.query.target_id) {
       countQuery = countQuery.where('target_id', getStringQuery(req.query.target_id))
+    }
+    // Include organization filter when provided via validated queryParser filters
+    if ((req.filters as any)?.organization_id) {
+      countQuery = countQuery.where('organization_id', (req.filters as any).organization_id)
     }
     
     const [{ total }] = await countQuery

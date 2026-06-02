@@ -1,6 +1,7 @@
 import { prisma } from '../lib/prisma.js';
 import { db } from '../db/knex.js';
 import type { BackgroundJobSystem } from '../jobs/system.js';
+import { getSorobanBootResult } from './sorobanBoot.js';
 
 const DEFAULT_TIMEOUT_MS = 3000;
 
@@ -70,6 +71,8 @@ export const healthService = {
         ? horizonResult.value
         : { status: 'down', error: String(horizonResult.reason?.message ?? 'Unknown error') };
 
+    const sorobanBoot = this.checkSorobanBoot();
+
     const components = [database, migrations, jobs, horizonListener];
     const isDown = components.some((c: any) => c.status === 'down');
     const isDegraded = components.some((c: any) => c.status === 'stale');
@@ -83,8 +86,21 @@ export const healthService = {
         migrations,
         jobs,
         horizonListener,
+        sorobanBoot,
       },
     };
+  },
+
+  /**
+   * Reports the cached result of the testnet friendbot precheck.
+   * Status is 'pending' before the async precheck completes.
+   */
+  checkSorobanBoot(): { status: string; funded?: boolean; error?: string } {
+    const result = getSorobanBootResult();
+    if (!result) return { status: 'pending' };
+    if (!result.ran) return { status: 'not_applicable' };
+    if (result.error) return { status: 'error', error: result.error };
+    return { status: 'ok', funded: result.funded ?? false };
   },
 
   async checkDatabase(timeoutMs = DEFAULT_TIMEOUT_MS): Promise<{ status: string; error?: string }> {

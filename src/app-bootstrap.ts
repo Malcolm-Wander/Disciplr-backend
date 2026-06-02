@@ -22,6 +22,7 @@ import { adminVerifiersRouter } from './routes/adminVerifiers.js'
 import { verificationsRouter } from './routes/verifications.js'
 import { apiKeysRouter } from './routes/apiKeys.js'
 import { notificationsRouter } from './routes/notifications.js'
+import { withRequestPrisma } from './middleware/withRequestPrisma.js'
 import {
   securityMetricsMiddleware,
   securityRateLimitMiddleware,
@@ -33,6 +34,7 @@ export function bootstrapApp() {
 
   app.use(securityMetricsMiddleware)
   app.use(securityRateLimitMiddleware)
+  app.use(withRequestPrisma)
 
   app.use('/api/health', healthRateLimiter, createHealthRouter(jobSystem))
   app.use('/api/jobs', createJobsRouter(jobSystem))

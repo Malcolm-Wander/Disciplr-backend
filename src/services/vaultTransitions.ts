@@ -11,7 +11,8 @@ export interface TransitionResult {
 
 const ALLOWED_TRANSITIONS: Record<string, string[]> = {
   draft: ['active', 'cancelled'],
-  active: ['completed', 'failed', 'cancelled'],
+  active: ['completed', 'failed', 'cancelled', 'disputed'],
+  disputed: ['active', 'completed', 'failed'],
   completed: [],
   failed: [],
   cancelled: [],
@@ -160,5 +161,51 @@ export const activateVault = (vaultId: string): TransitionResult => {
     return { success: false, error: `Cannot activate: status is '${vault.status}', expected 'draft'` };
   }
   vault.status = 'active';
+  return { success: true };
+};
+
+/**
+ * Places an `active` vault into `disputed`, blocking slash and claim until resolved.
+ * Only callable by an admin/guardian.
+ */
+export const disputeVault = (vaultId: string, requesterId: string, adminId: string): TransitionResult => {
+  if (requesterId !== adminId) {
+    return { success: false, error: 'Only an admin can place a vault into disputed state' };
+  }
+  const vault = findVault(vaultId);
+  if (!vault) return { success: false, error: 'Vault not found' };
+  const allowed = ALLOWED_TRANSITIONS[vault.status];
+  if (!allowed?.includes('disputed')) {
+    return { success: false, error: `Cannot dispute vault in status '${vault.status}'` };
+  }
+  vault.status = 'disputed';
+  return { success: true };
+};
+
+type DisputeResolution = 'active' | 'completed' | 'failed';
+
+/**
+ * Resolves a `disputed` vault back to `active`, or directly to `completed` / `failed`.
+ * Only callable by an admin/guardian.
+ */
+export const resolveDispute = (
+  vaultId: string,
+  requesterId: string,
+  adminId: string,
+  target: DisputeResolution,
+): TransitionResult => {
+  if (requesterId !== adminId) {
+    return { success: false, error: 'Only an admin can resolve a disputed vault' };
+  }
+  const vault = findVault(vaultId);
+  if (!vault) return { success: false, error: 'Vault not found' };
+  if (vault.status !== 'disputed') {
+    return { success: false, error: `Vault is not in disputed state (current: '${vault.status}')` };
+  }
+  const allowed = ALLOWED_TRANSITIONS['disputed'];
+  if (!allowed?.includes(target)) {
+    return { success: false, error: `Invalid dispute resolution target: '${target}'` };
+  }
+  vault.status = target;
   return { success: true };
 };
